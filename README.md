@@ -174,6 +174,7 @@ applyTo: "**/*.java"
 npm run typecheck   # tsc --noEmit
 npm run selftest    # 離線測試：diff、錨定、URL 解析、JSON 解析
 npm run check       # 兩者都跑
+npx tsx scripts/demo.ts  # 用假資料渲染留言，看留言長什麼樣（不連 ADO、不呼叫模型）
 ```
 
 `scripts/selftest.ts` 是行號錨定的回歸網。**改動 `libs/diff.ts` 或 `anchoring/locate.ts`

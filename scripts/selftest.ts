@@ -18,6 +18,7 @@ import { selectProfiles, filesForProfile } from "../profiles";
 import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
 import type { ToolSpec } from "../profiles/types";
 import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
+import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 
 let passed = 0;
 let failed = 0;
@@ -590,6 +591,48 @@ section("留言生命週期");
   const d = collectDismissals(dismissed);
   eq("只收集被標記不修的", d.length, 1);
   eq("記錄指紋", d[0]?.fingerprint, "deadbeef");
+}
+
+// --- realistic seeded PR ---
+// Toy fixtures prove the algorithm runs; this proves it lands on the right line in code
+// that looks like real code. Every expectation below was verified against `grep -n` on the
+// actual repository these files came from.
+section("真實 PR 錨定（植入缺陷的靶場）");
+{
+  const seeded: FileDiff[] = SEEDED_FILES.map((f) => {
+    const leftLines = splitLines(Buffer.from(f.base, "utf8"));
+    const rightLines = splitLines(Buffer.from(f.head, "utf8"));
+    const { hunks, changedRightLines } = buildHunks(leftLines, rightLines, diffLines(leftLines, rightLines));
+    return {
+      path: f.path,
+      changeType: "edit" as const,
+      hunks,
+      rightLines,
+      leftLines,
+      changedRightLines,
+      binary: false,
+      truncated: false,
+      language: f.language,
+    };
+  });
+
+  for (const e of EXPECTED_ANCHORS) {
+    const r = anchorFinding(
+      mkFinding({
+        file: e.file,
+        quote: e.quote,
+        context_before: e.contextBefore,
+        context_after: e.contextAfter,
+      }),
+      seeded,
+    );
+    if (typeof e.expect === "number") {
+      eq(e.name, r.anchor?.startLine, e.expect);
+    } else {
+      eq(e.name, r.failure, e.expect);
+      check(`${e.name}（不得回傳 anchor）`, r.anchor === undefined);
+    }
+  }
 }
 
 console.log(`\n結果：${passed} 通過、${failed} 失敗`);

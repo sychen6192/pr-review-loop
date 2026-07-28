@@ -6,7 +6,8 @@
 // line in code that looks like real code — multi-language, real indentation, and a line
 // that legitimately appears twice in the same file.
 //
-// Every expected line number was verified against a real git branch with `grep -n`.
+// Every expected line number below was verified by running the pipeline against a real
+// git branch containing these files and cross-checking with `grep -n`.
 
 export interface SeededFile {
   path: string;

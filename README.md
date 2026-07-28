@@ -255,6 +255,19 @@ applyTo: "**/*.java"
 - **PR 很大導致部分檔案沒被審查。** summary 會列出未納入的檔案。調高 `PRR_MAX_DIFF_CHARS`
   或提高模型 context 上限。
 
+## 本地模式（不需要 ADO 憑證）
+
+從 git 分支建立 review context，用來在開 PR 前先審、或在沒有 ADO 存取權時驗證流程。
+走的是**完全相同的** diff 與錨定程式碼路徑。
+
+```bash
+# 產生 finder 會收到的完整 prompt
+npx tsx scripts/local-review.ts prompt <repo> <base> <head> [out.md]
+
+# 帶著 findings JSON 跑真實的錨定與裁決，看每則留言會落在哪一行
+npx tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json>
+```
+
 ## 開發
 
 ```bash

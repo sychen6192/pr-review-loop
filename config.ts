@@ -40,6 +40,21 @@ export const ADO_API_VERSION = process.env.PRR_ADO_API_VERSION ?? "7.1";
 export const ADO_TIMEOUT_MS = Number(process.env.PRR_ADO_TIMEOUT_MS ?? 60_000);
 export const ADO_MAX_RETRIES = Number(process.env.PRR_ADO_MAX_RETRIES ?? 3);
 
+// --- Runner ---
+// openai   = direct HTTP to an OpenAI-compatible endpoint. Supports engine-level guided
+//            decoding (vLLM/xgrammar), which is what makes weak models emit valid JSON.
+// opencode = drive models through the opencode CLI, inheriting its provider config.
+//            NOTE: response_format is not passed through, so schemas are prompt-level only.
+export const RUNNER_KIND = (process.env.PRR_RUNNER ?? "openai") as "openai" | "opencode";
+export const OPENCODE_BIN = process.env.PRR_OPENCODE_BIN ?? "opencode";
+// The agent definition prloop drives. Installed by `npm run setup`; must have every tool
+// disabled — the review context is fully injected, and there is no local checkout to read.
+export const OPENCODE_AGENT = process.env.PRR_OPENCODE_AGENT ?? "prloop-reviewer";
+// 0 = drop --format json (fallback for opencode builds without JSONL events; loses tracing).
+export const OPENCODE_JSON_EVENTS = process.env.PRR_OPENCODE_JSON !== "0";
+// Wall-clock timeout for one opencode session.
+export const AGENT_TIMEOUT_MS = Number(process.env.PRR_AGENT_TIMEOUT_MS ?? 15 * 60 * 1000);
+
 // --- Model access (OpenAI-compatible: LiteLLM proxy, vLLM, Ollama /v1) ---
 export const LLM_BASE_URL = process.env.PRR_LLM_BASE_URL ?? "http://localhost:4000/v1";
 export const LLM_API_KEY = process.env.PRR_LLM_API_KEY ?? "dummy";
@@ -65,6 +80,24 @@ export const HUNK_CONTEXT_BEFORE = Number(process.env.PRR_HUNK_CONTEXT_BEFORE ??
 export const HUNK_CONTEXT_AFTER = Number(process.env.PRR_HUNK_CONTEXT_AFTER ?? 3);
 // Files bigger than this are diffed but never sent whole.
 export const MAX_FILE_BYTES = Number(process.env.PRR_MAX_FILE_BYTES ?? 2_000_000);
+
+// --- Adversarial verification (M3) ---
+// Skeptics should be a DIFFERENT model family from the finders. Same-family verifiers share
+// the finders' blind spots, so they confirm the errors that matter most.
+export const SKEPTIC_MODELS = (process.env.PRR_SKEPTIC_MODELS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+// Verifiers per finding. 1 is a single gate; 3 gives a majority vote worth the name.
+export const SKEPTIC_ROUNDS = Number(process.env.PRR_SKEPTIC_ROUNDS ?? 1);
+// Source lines shown around the finding. Small on purpose: models degrade with unlimited
+// context, and a skeptic that needs the whole file is guessing.
+export const SKEPTIC_CONTEXT_LINES = Number(process.env.PRR_SKEPTIC_CONTEXT_LINES ?? 25);
+// Findings need corroboration to be published: either N finders found it independently, or
+// a skeptic actively cleared it. A lone unverified finding stays in the summary instead.
+export const MIN_CONSENSUS_SOURCES = Number(process.env.PRR_MIN_CONSENSUS_SOURCES ?? 2);
+// 0 = publish single-source findings that no skeptic examined (looser, noisier).
+export const REQUIRE_CORROBORATION = process.env.PRR_REQUIRE_CORROBORATION !== "0";
 
 // --- Review axes ---
 // 1 = skip the requirement axis entirely.

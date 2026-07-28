@@ -47,7 +47,7 @@ async function main() {
   if (isDryRun()) log("DRY RUN：不會發佈任何留言");
   if (compareTo > 0) log(`增量模式：只審查 iteration ${compareTo} 之後的變更`);
 
-  const result = await runReview({ ref, runner: createRunner(), compareTo });
+  const result = await runReview({ ref, runner: await createRunner(), compareTo });
 
   banner("完成");
   log(`耗時 ${result.durationSec}s，artifacts：${result.runDir}`);

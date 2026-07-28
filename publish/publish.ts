@@ -6,7 +6,9 @@ import { createThread, listThreads, updateComment, type Thread } from "../ado/th
 import { postStatus } from "../ado/statuses";
 import { unmetCriteria } from "../gates/requirement";
 import { log } from "../libs/log";
+import { collectDismissals, findStaleThreads, iterationMarker, resolveStaleThreads } from "./lifecycle";
 import type { AnchoredFinding, PrRef } from "../libs/types";
+import type { DismissalRecord } from "./lifecycle";
 import { SUMMARY_MARKER, renderFindingComment, renderSummary, type SummaryInput } from "./format";
 
 export interface PublishResult {
@@ -14,6 +16,10 @@ export interface PublishResult {
   posted: AnchoredFinding[];
   alreadyPosted: AnchoredFinding[];
   failed: Array<{ finding: AnchoredFinding; error: string }>;
+  // Our own threads auto-closed because the code they pointed at changed.
+  resolved: number;
+  // Findings a human closed as wontFix/byDesign — raw material for future exclusion rules.
+  dismissals: DismissalRecord[];
 }
 
 function findSummaryThread(threads: Thread[]): { thread: Thread; commentId: number } | undefined {
@@ -43,8 +49,8 @@ export async function publish(
   axes: { requirement: AnchoredFinding[]; code: AnchoredFinding[] },
   summaryInput: SummaryInput,
 ): Promise<PublishResult> {
-  const result: PublishResult = { posted: [], alreadyPosted: [], failed: [] };
-  const summaryBody = renderSummary(summaryInput);
+  const result: PublishResult = { posted: [], alreadyPosted: [], failed: [], resolved: 0, dismissals: [] };
+  const summaryBody = `${renderSummary(summaryInput)}\n${iterationMarker(summaryInput.ctx.iteration.id)}`;
 
   // Requirement findings go first so that if anything below fails, the message that
   // survived is the one about the PR not doing what was asked.
@@ -65,6 +71,14 @@ export async function publish(
   const threads = await listThreads(ref);
   const seen = postedFingerprints(threads);
   const { ctx } = summaryInput;
+
+  // Close our own threads whose code has since changed, before adding new ones — otherwise
+  // a PR accumulates stale comments the author already addressed.
+  result.resolved = await resolveStaleThreads(ref, findStaleThreads(threads, ctx.files));
+  result.dismissals = collectDismissals(threads);
+  if (result.dismissals.length > 0) {
+    log(`偵測到 ${result.dismissals.length} 則先前被人工標記為不修的留言（已記錄，供日後收斂規則用）`);
+  }
 
   for (const f of findings) {
     if (seen.has(f.fingerprint)) {

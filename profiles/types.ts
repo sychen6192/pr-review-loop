@@ -1,0 +1,64 @@
+// Static-analysis profiles: which tools run for which language, and what to do with what
+// they say.
+//
+// The tiering is the important part. Deterministic tools and LLMs are good at different
+// things, and treating every tool finding the same way is how you get either noise or
+// missed bugs:
+//
+//   fact     — the tool is authoritative and near-zero false positive (tsc, Error Prone,
+//              mypy). Post it, don't ask a model to re-derive it.
+//   triage   — the tool has real recall but a high false-positive rate (bandit, SpotBugs,
+//              PMD). An LLM judges exploitability in context before anything is posted.
+//   suppress — style and convention noise (checkstyle, most eslint stylistic rules). Never
+//              becomes a comment; summarised as a count so it isn't silently dropped.
+import type { Severity } from "../config";
+
+export type ToolTier = "fact" | "triage" | "suppress";
+
+export type OutputFormat =
+  | "sarif"
+  | "ruff-json"
+  | "eslint-json"
+  | "checkstyle-xml"
+  | "mypy-json"
+  | "tsc-text";
+
+export interface ToolSpec {
+  name: string;
+  bin: string;
+  /** Args for the tool. `files` are workdir-relative paths of the changed files. */
+  args: (files: string[]) => string[];
+  format: OutputFormat;
+  tier: ToolTier;
+  /** Only run when this path exists under the workdir (e.g. a compiled classes dir). */
+  requires?: string;
+  /** Tools that signal findings via a non-zero exit code shouldn't be treated as failures. */
+  allowNonZeroExit?: boolean;
+  /** Some tools write findings to stderr. */
+  readStderr?: boolean;
+}
+
+export interface Profile {
+  language: string;
+  /** File extensions this profile claims. */
+  extensions: string[];
+  tools: ToolSpec[];
+  /** Rule ids that are always dropped, whatever tier the tool sits in. */
+  ignoreRules?: string[];
+}
+
+/** One normalized finding from any tool, before diff filtering. */
+export interface ToolFinding {
+  tool: string;
+  tier: ToolTier;
+  ruleId: string;
+  message: string;
+  /** Workdir-relative path. */
+  file: string;
+  line: number;
+  endLine?: number;
+  severity: Severity;
+  /** The tool's own severity string, kept for the report. */
+  rawSeverity?: string;
+  helpUri?: string;
+}

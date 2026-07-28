@@ -6,6 +6,7 @@
 import { FINDER_MODELS, LLM_BASE_URL, isDryRun } from "./config";
 import { parsePrUrl } from "./ado/client";
 import { unmetCriteria } from "./gates/requirement";
+import { resolveLastReviewedIteration } from "./publish/lifecycle";
 import { banner, die, log } from "./libs/log";
 import { createRunner } from "./models/runner";
 import { runReview } from "./orchestrator";
@@ -17,6 +18,7 @@ function usage(): never {
 
 選項：
   --since <iteration>   只審查該 iteration 之後的變更（增量 review）
+  --since auto          自動接續上次審查的 iteration
   --dry-run             計算但不發佈留言
   -h, --help            顯示此說明
 
@@ -32,12 +34,16 @@ async function main() {
   if (!url) usage();
 
   let compareTo = 0;
+  let sinceAuto = false;
   const sinceIdx = args.indexOf("--since");
   if (sinceIdx >= 0) {
     const raw = args[sinceIdx + 1];
-    const n = Number(raw);
-    if (!Number.isInteger(n) || n < 0) die(`--since 需要非負整數，收到：${raw}`);
-    compareTo = n;
+    if (raw === "auto") sinceAuto = true;
+    else {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0) die(`--since 需要非負整數或 auto，收到：${raw}`);
+      compareTo = n;
+    }
   }
   if (args.includes("--dry-run")) process.env["PRR_DRY_RUN"] = "1";
 
@@ -45,6 +51,14 @@ async function main() {
   banner(`prloop：${ref.org}/${ref.project}/${ref.repoId} PR !${ref.prId}`);
   log(`模型：${FINDER_MODELS.join("、")} @ ${LLM_BASE_URL}`);
   if (isDryRun()) log("DRY RUN：不會發佈任何留言");
+  if (sinceAuto) {
+    const last = await resolveLastReviewedIteration(ref);
+    if (last === undefined) log("--since auto：找不到先前的審查紀錄，改為完整審查");
+    else {
+      compareTo = last;
+      log(`--since auto：接續 iteration ${last}`);
+    }
+  }
   if (compareTo > 0) log(`增量模式：只審查 iteration ${compareTo} 之後的變更`);
 
   const result = await runReview({ ref, runner: await createRunner(), compareTo });
@@ -67,7 +81,8 @@ async function main() {
   if (result.publishResult) {
     log(
       `實際發佈 ${result.publishResult.posted.length}｜先前已發過 ${result.publishResult.alreadyPosted.length}` +
-        (result.publishResult.failed.length ? `｜失敗 ${result.publishResult.failed.length}` : ""),
+        (result.publishResult.failed.length ? `｜失敗 ${result.publishResult.failed.length}` : "") +
+        (result.publishResult.resolved ? `｜自動關閉 ${result.publishResult.resolved}` : ""),
     );
   }
 

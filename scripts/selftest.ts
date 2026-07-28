@@ -12,6 +12,11 @@ import { htmlToText } from "../libs/html";
 import { globToRegExp, loadRules, selectRules } from "../libs/rules";
 import { finalize } from "../gates/aggregate";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
+import { filterToChangedLines } from "../gates/static";
+import { parseToolOutput } from "../profiles/parsers";
+import { selectProfiles, filesForProfile } from "../profiles";
+import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
+import type { ToolSpec } from "../profiles/types";
 import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 
 let passed = 0;
@@ -451,6 +456,140 @@ section("共識裁決");
   const lowSev = finalize(empty, [mk({ sources: ["m1", "m2"], severity: "low" })]);
   eq("低於門檻 → 不發 inline", lowSev.inline.length, 0);
   eq("原因標為 severity", lowSev.belowBar[0]?.suppressedBy, "severity");
+}
+
+// --- static analysis ---
+section("工具輸出解析");
+const spec = (format: string): ToolSpec =>
+  ({ name: "t", bin: "t", args: () => [], format, tier: "triage" }) as ToolSpec;
+
+{
+  const sarif = JSON.stringify({
+    runs: [{
+      tool: { driver: { name: "bandit", rules: [{ id: "B602", helpUri: "https://x" }] } },
+      results: [{
+        ruleId: "B602",
+        level: "note",
+        message: { text: "subprocess with shell=True" },
+        locations: [{ physicalLocation: { artifactLocation: { uri: "src/a.py" }, region: { startLine: 12 } } }],
+        properties: { "security-severity": "9.8" },
+      }],
+    }],
+  });
+  const f = parseToolOutput(sarif, spec("sarif"), "/w")[0];
+  eq("SARIF 規則 id", f?.ruleId, "B602");
+  eq("SARIF 行號", f?.line, 12);
+  // A rule can be level:note while describing a critical vulnerability.
+  eq("security-severity 覆蓋 level", f?.severity, "critical");
+  eq("SARIF helpUri", f?.helpUri, "https://x");
+}
+{
+  const ruff = JSON.stringify([
+    { code: "B006", message: "mutable default", filename: "/w/src/a.py", location: { row: 3 } },
+    { code: "S602", message: "shell", filename: "/w/src/a.py", location: { row: 9 } },
+  ]);
+  const fs2 = parseToolOutput(ruff, spec("ruff-json"), "/w");
+  eq("ruff 兩筆", fs2.length, 2);
+  eq("workdir 前綴被剝除", fs2[0]?.file, "src/a.py");
+  eq("S 前綴視為安全類（高）", fs2[1]?.severity, "high");
+}
+{
+  const eslint = JSON.stringify([
+    { filePath: "/w/app/p.tsx", messages: [{ ruleId: "no-eval", severity: 2, message: "eval", line: 4 }] },
+  ]);
+  const f = parseToolOutput(eslint, spec("eslint-json"), "/w")[0];
+  eq("eslint 規則", f?.ruleId, "no-eval");
+  eq("eslint severity 2 → high", f?.severity, "high");
+}
+{
+  const xml = `<?xml version="1.0"?><checkstyle><file name="/w/src/A.java">` +
+    `<error line="7" severity="error" message="Avoid &quot;x&quot; here" source="com.puppycrawl.tools.checkstyle.MagicNumberCheck"/>` +
+    `</file></checkstyle>`;
+  const f = parseToolOutput(xml, spec("checkstyle-xml"), "/w")[0];
+  eq("checkstyle 行號", f?.line, 7);
+  eq("規則取最後一段", f?.ruleId, "MagicNumberCheck");
+  check("XML 實體已解碼", (f?.message ?? "").includes('"x"'));
+}
+{
+  // &amp; must be decoded LAST, or "&amp;lt;" wrongly becomes "<" instead of "&lt;".
+  const xml = `<?xml version="1.0"?><checkstyle><file name="/w/A.java">` +
+    `<error line="1" severity="error" message="a &amp;lt; b" source="X"/></file></checkstyle>`;
+  const f = parseToolOutput(xml, spec("checkstyle-xml"), "/w")[0];
+  eq("&amp; 最後解碼，不會二次還原", f?.message, "a &lt; b");
+}
+{
+  const mypy = '{"file":"src/a.py","line":5,"severity":"error","message":"bad type","code":"arg-type"}\n' +
+               '{"file":"src/a.py","line":6,"severity":"note","message":"context"}';
+  const fs3 = parseToolOutput(mypy, spec("mypy-json"), "/w");
+  eq("mypy 只保留 error", fs3.length, 1);
+  eq("mypy 型別錯誤視為高", fs3[0]?.severity, "high");
+}
+{
+  const tsc = "src/a.ts(12,5): error TS2345: Argument of type 'x'.\nirrelevant line";
+  const f = parseToolOutput(tsc, spec("tsc-text"), "/w")[0];
+  eq("tsc 規則", f?.ruleId, "TS2345");
+  eq("tsc 行號", f?.line, 12);
+}
+check("空輸出不炸", parseToolOutput("", spec("sarif"), "/w").length === 0);
+check("壞掉的輸出不炸", parseToolOutput("{{{not json", spec("sarif"), "/w").length === 0);
+
+section("靜態 findings 的 diff 過濾");
+{
+  const f = mkFile("/src/a.py", ["a()", "b()", "c()"], [2]);
+  const mk = (line: number) => ({
+    tool: "ruff", tier: "triage" as const, ruleId: "X", message: "m",
+    file: "src/a.py", line, severity: "medium" as const,
+  });
+  const r = filterToChangedLines([mk(1), mk(2), mk(3)], [f]);
+  eq("只保留落在變更行上的", r.kept.length, 1);
+  eq("保留的是第 2 行", r.kept[0]?.line, 2);
+  eq("其餘被濾除", r.dropped, 2);
+
+  const other = filterToChangedLines([{ ...mk(2), file: "other/z.py" }], [f]);
+  eq("不在變更檔案中的一律濾除", other.kept.length, 0);
+}
+
+section("語言 profile 選取");
+{
+  const ps = selectProfiles(["src/a.py", "README.md"]);
+  eq("只選到 python", ps.map((p) => p.language), ["python"]);
+  eq("非該語言的檔案不傳給工具", filesForProfile(ps[0]!, ["src/a.py", "README.md"]), ["src/a.py"]);
+  eq("混合語言選到兩個 profile", selectProfiles(["A.java", "p.tsx"]).length, 2);
+  eq("無對應語言時為空", selectProfiles(["README.md"]).length, 0);
+}
+
+section("留言生命週期");
+{
+  const threads = [
+    { id: 1, status: "closed", comments: [{ id: 1, content: `<!-- prloop --><!-- prloop:summary -->x\n${iterationMarker(7)}` }] },
+  ];
+  eq("從 summary 讀回上次審查的 iteration", lastReviewedIteration(threads), 7);
+  eq("沒有標記時回傳 undefined", lastReviewedIteration([{ id: 2, comments: [{ id: 1, content: "路人留言" }] }]), undefined);
+}
+{
+  const f = mkFile("/src/a.ts", ["x();", "y();"], [1]);
+  const ours = (line: number, status: string) => ({
+    id: line, status,
+    comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=abc123 -->issue" }],
+    threadContext: { filePath: "/src/a.ts", rightFileStart: { line, offset: 1 } },
+  });
+  eq("行號超出檔案 → 判定為過時", findStaleThreads([ours(99, "active")], [f]).length, 1);
+  eq("行號仍在範圍內 → 不動它", findStaleThreads([ours(1, "active")], [f]).length, 0);
+  eq("已關閉的 thread 不再處理", findStaleThreads([ours(99, "fixed")], [f]).length, 0);
+  // Someone else's comment must never be touched.
+  const foreign = { id: 5, status: "active", comments: [{ id: 1, content: "同事的留言" }],
+    threadContext: { filePath: "/src/a.ts", rightFileStart: { line: 99, offset: 1 } } };
+  eq("非本工具的留言不處理", findStaleThreads([foreign], [f]).length, 0);
+}
+{
+  const dismissed = [
+    { id: 1, status: "wontFix", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=deadbeef -->不修" }],
+      threadContext: { filePath: "/src/a.ts" } },
+    { id: 2, status: "active", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=aaaa -->still open" }] },
+  ];
+  const d = collectDismissals(dismissed);
+  eq("只收集被標記不修的", d.length, 1);
+  eq("記錄指紋", d[0]?.fingerprint, "deadbeef");
 }
 
 console.log(`\n結果：${passed} 通過、${failed} 失敗`);

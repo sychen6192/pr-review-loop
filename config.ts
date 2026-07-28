@@ -99,6 +99,20 @@ export const MIN_CONSENSUS_SOURCES = Number(process.env.PRR_MIN_CONSENSUS_SOURCE
 // 0 = publish single-source findings that no skeptic examined (looser, noisier).
 export const REQUIRE_CORROBORATION = process.env.PRR_REQUIRE_CORROBORATION !== "0";
 
+// --- Static analysis (M4) ---
+// A checkout of the PR's source branch. Linters need files on disk; without this the
+// static gate skips. In an Azure pipeline this is the agent's own checkout.
+export const WORKDIR = process.env.PRR_WORKDIR ?? "";
+export const SKIP_STATIC = process.env.PRR_SKIP_STATIC === "1";
+export const STATIC_TIMEOUT_MS = Number(process.env.PRR_STATIC_TIMEOUT_MS ?? 5 * 60 * 1000);
+// Model that judges high-false-positive tool findings. Unset = those findings are dropped
+// rather than posted unjudged.
+export const TRIAGE_MODEL = process.env.PRR_TRIAGE_MODEL ?? "";
+export const TRIAGE_CONTEXT_LINES = Number(process.env.PRR_TRIAGE_CONTEXT_LINES ?? 12);
+// Ceiling on one triage call. A PR that trips 200 lint rules has a lint config problem,
+// not a review problem.
+export const MAX_TRIAGE_ITEMS = Number(process.env.PRR_MAX_TRIAGE_ITEMS ?? 40);
+
 // --- Review axes ---
 // 1 = skip the requirement axis entirely.
 export const SKIP_REQUIREMENT = process.env.PRR_SKIP_REQUIREMENT === "1";

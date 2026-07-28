@@ -1,12 +1,13 @@
 // The single deterministic control flow. Models are called at exactly one point (the finder
 // stage); every other decision — what to review, where a finding lives, what gets posted —
 // is made by code here (design principle: the loop never hands control to a model).
-import { SKIP_REQUIREMENT } from "./config";
+import { SKIP_REQUIREMENT, SKIP_STATIC } from "./config";
 import { buildReviewContext, type ReviewContext } from "./ado/intake";
 import { anchorAndDedupe, finalize, type AggregateResult } from "./gates/aggregate";
 import { runFinders } from "./gates/finder";
 import { runRequirementGate, toRequirementFindings } from "./gates/requirement";
 import { applyVerdicts, runSkeptic } from "./gates/skeptic";
+import { runStaticGate, triageAndConvert, type StaticResult } from "./gates/static";
 import { createRunDir } from "./libs/artifacts";
 import { banner, log } from "./libs/log";
 import type { AnchoredFinding, ModelRunner, PrRef, RequirementResult } from "./libs/types";
@@ -70,8 +71,18 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
 
   // The two axes run concurrently and blind to each other: neither model sees the other's
   // output, so "the code is clean" can't excuse a missing requirement, or vice versa.
-  banner("Step 2/4：執行需求軸與程式碼軸");
-  const [reqOut, finderOut] = await Promise.all([
+  banner("Step 2/4：執行靜態分析、需求軸與程式碼軸");
+  const [staticResult, reqOut, finderOut] = await Promise.all([
+    SKIP_STATIC
+      ? Promise.resolve<StaticResult>({
+          facts: [],
+          needsTriage: [],
+          suppressedCount: 0,
+          ranTools: [],
+          skipped: [],
+          skippedReason: "依設定跳過靜態分析",
+        })
+      : runStaticGate(ctx.files),
     SKIP_REQUIREMENT
       ? Promise.resolve<Awaited<ReturnType<typeof runRequirementGate>>>({
           result: {
@@ -89,6 +100,9 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       compareTo: ctx.compareTo,
     }),
   ]);
+
+  if (staticResult.skippedReason) log(`靜態分析：${staticResult.skippedReason}`);
+  run.saveJson("static.json", staticResult);
 
   const req = reqOut.result;
   if (reqOut.prompt) run.save("requirement-prompt.md", reqOut.prompt);
@@ -120,7 +134,12 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     })),
   );
 
-  const agg = finalize(candidates, survivors);
+  // Tool findings join the code axis after triage. They carry real line numbers, so they
+  // skip anchoring, and a deterministic tool counts as its own corroboration.
+  const toolOut = await triageAndConvert(opts.runner, staticResult, ctx.files);
+  run.saveJson("static-findings.json", toolOut);
+
+  const agg = finalize(candidates, [...survivors, ...toolOut.findings]);
   const reqFindings = toRequirementFindings(req, ctx.files);
   // Attach the tracking id ADO needs for each thread to survive future pushes.
   for (const f of [...agg.inline, ...reqFindings]) {
@@ -150,6 +169,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       finderErrors,
       omittedFiles: omitted,
       appliedRules: rules,
+      staticResult,
       durationSec,
       runDir: run.dir,
     },
@@ -159,6 +179,8 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     posted: publishResult.posted.map((f) => ({ fp: f.fingerprint, file: f.file, line: f.anchor?.startLine })),
     alreadyPosted: publishResult.alreadyPosted.map((f) => f.fingerprint),
     failed: publishResult.failed.map((x) => ({ fp: x.finding.fingerprint, error: x.error })),
+    resolved: publishResult.resolved,
+    dismissals: publishResult.dismissals,
   });
 
   return { ctx, agg, req, reqFindings, publishResult, runDir: run.dir, durationSec };

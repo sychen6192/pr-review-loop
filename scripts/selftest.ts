@@ -1,0 +1,398 @@
+// Offline self-test. Anchoring is the piece that decides whether comments land on the right
+// line, so it gets the most coverage here — these assertions are the regression net for the
+// class of bug that motivated the whole project.
+import { splitLines } from "../ado/blobs";
+import { anchorFinding, resolveFile } from "../anchoring/locate";
+import { parsePrUrl } from "../ado/client";
+import { buildHunks, diffLines, renderUnifiedDiff } from "../libs/diff";
+import { parseJsonObject } from "../libs/json";
+import { detectLanguage, isNoiseFile, isReviewable } from "../libs/lang";
+import { buildDiffPayload } from "../libs/payload";
+import { htmlToText } from "../libs/html";
+import { globToRegExp, loadRules, selectRules } from "../libs/rules";
+import type { FileDiff, RawFinding } from "../libs/types";
+
+let passed = 0;
+let failed = 0;
+
+function check(name: string, cond: boolean, detail?: string) {
+  if (cond) {
+    passed++;
+    console.log(`  [OK]   ${name}`);
+  } else {
+    failed++;
+    console.log(`  [FAIL] ${name}${detail ? ` — ${detail}` : ""}`);
+  }
+}
+
+function eq<T>(name: string, actual: T, expected: T) {
+  const a = JSON.stringify(actual);
+  const e = JSON.stringify(expected);
+  check(name, a === e, `expected ${e}, got ${a}`);
+}
+
+function section(t: string) {
+  console.log(`\n${t}`);
+}
+
+// --- blob line splitting ---
+section("blob 行切分（CRLF / BOM / 結尾換行）");
+eq("LF 三行", splitLines(Buffer.from("a\nb\nc")), ["a", "b", "c"]);
+eq("結尾換行不產生幽靈行", splitLines(Buffer.from("a\nb\n")), ["a", "b"]);
+eq("CRLF 保留 \\r", splitLines(Buffer.from("a\r\nb\r\n")), ["a\r", "b\r"]);
+eq("BOM 被移除", splitLines(Buffer.from("﻿a\nb")), ["a", "b"]);
+eq("空檔案", splitLines(Buffer.from("")), []);
+eq("單行無換行", splitLines(Buffer.from("only")), ["only"]);
+
+// --- diff ---
+section("diff 與 hunk 行號");
+{
+  const left = ["a", "b", "c", "d", "e"];
+  const right = ["a", "b", "X", "d", "e"];
+  const edits = diffLines(left, right);
+  const { hunks, changedRightLines, changedLeftLines } = buildHunks(left, right, edits);
+  eq("單行替換 → 1 個 hunk", hunks.length, 1);
+  eq("右側變更行 = 第 3 行", [...changedRightLines], [3]);
+  eq("左側刪除行 = 第 3 行", [...changedLeftLines], [3]);
+  const h = hunks[0]!;
+  check("hunk 涵蓋整個小檔案", h.rightStart === 1 && h.rightStart + h.rightCount - 1 === 5);
+}
+{
+  // Line numbers must stay correct after an insertion shifts everything below it.
+  const left = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"];
+  const right = [...left.slice(0, 5), "NEW", ...left.slice(5)];
+  const { changedRightLines } = buildHunks(left, right, diffLines(left, right));
+  eq("插入行為右側第 6 行", [...changedRightLines], [6]);
+}
+{
+  const left: string[] = [];
+  const right = ["a", "b"];
+  const { hunks, changedRightLines } = buildHunks(left, right, diffLines(left, right));
+  eq("新檔案：兩行皆為變更", [...changedRightLines], [1, 2]);
+  check("新檔案有 hunk", hunks.length === 1);
+}
+{
+  const same = ["x", "y"];
+  const { hunks } = buildHunks(same, same, diffLines(same, same));
+  eq("無變更 → 無 hunk", hunks.length, 0);
+}
+{
+  const left = ["b", "c"];
+  const right = ["a", "b", "c"];
+  const { hunks, changedRightLines } = buildHunks(left, right, diffLines(left, right));
+  eq("開頭插入 rightStart=1", hunks[0]?.rightStart, 1);
+  eq("開頭插入 leftStart=1", hunks[0]?.leftStart, 1);
+  eq("開頭插入變更行=1", [...changedRightLines], [1]);
+}
+{
+  // Scattered edits in a long file: this is where an off-by-one in hunk headers would
+  // silently misplace every downstream comment.
+  const bigLeft = Array.from({ length: 200 }, (_, i) => `line${i + 1}();`);
+  const bigRight = [...bigLeft];
+  bigRight[9] = "CHANGED10();";
+  bigRight.splice(100, 0, "INSERTED();");
+  bigRight[180] = "CHANGED181();";
+  const { hunks, changedRightLines } = buildHunks(bigLeft, bigRight, diffLines(bigLeft, bigRight));
+  eq("三處分散變更 → 3 個 hunk", hunks.length, 3);
+  eq("變更行號正確", [...changedRightLines].sort((a, b) => a - b), [10, 101, 181]);
+  // The strongest assertion available: a hunk's declared span must match the real file.
+  for (const h of hunks) {
+    const bodyRight = h.body
+      .split("\n")
+      .filter((l) => l.startsWith(" ") || l.startsWith("+"))
+      .map((l) => l.slice(1));
+    const actual = bigRight.slice(h.rightStart - 1, h.rightStart - 1 + h.rightCount);
+    check(
+      `hunk@${h.rightStart} 宣告的行範圍與檔案實際內容一致`,
+      JSON.stringify(bodyRight) === JSON.stringify(actual),
+    );
+  }
+}
+{
+  const left = ["a", "b"];
+  const right = ["a", "B", "c"];
+  const rendered = renderUnifiedDiff("/f.ts", buildHunks(left, right, diffLines(left, right)).hunks);
+  check("unified diff 含 @@ 標頭", rendered.includes("@@ -"));
+  check("unified diff 含 +/- 行", rendered.includes("+B") && rendered.includes("-b"));
+}
+
+// --- anchoring ---
+section("quote 定位（核心）");
+
+function mkFile(path: string, rightLines: string[], changed: number[]): FileDiff {
+  const leftLines = rightLines.filter((_, i) => !changed.includes(i + 1));
+  const edits = diffLines(leftLines, rightLines);
+  const { hunks, changedRightLines } = buildHunks(leftLines, rightLines, edits);
+  return {
+    path,
+    changeType: "edit",
+    hunks,
+    rightLines,
+    leftLines,
+    changedRightLines: changedRightLines.size ? changedRightLines : new Set(changed),
+    binary: false,
+    truncated: false,
+    language: detectLanguage(path),
+  };
+}
+
+function mkFinding(over: Partial<RawFinding>): RawFinding {
+  return {
+    category: "logic",
+    severity: "high",
+    confidence: 0.8,
+    file: "/src/app.ts",
+    quote: "",
+    claim: "test",
+    side: "right",
+    ...over,
+  };
+}
+
+{
+  const f = mkFile("/src/app.ts", [
+    "function run() {",
+    "  const x = compute();",
+    "  return x / divisor;",
+    "}",
+  ], [3]);
+  const r = anchorFinding(mkFinding({ quote: "  return x / divisor;" }), [f]);
+  eq("精確 quote → 第 3 行", r.anchor?.startLine, 3);
+  eq("錨定在右側", r.anchor?.side, "right");
+  eq("startOffset 為 1", r.anchor?.startOffset, 1);
+  check("endOffset 覆蓋整行", (r.anchor?.endOffset ?? 0) > 1);
+}
+{
+  // The model reformatted the indentation — tier-2 matching must still find it.
+  const f = mkFile("/src/app.ts", ["function run() {", "    const x = compute();", "}"], [2]);
+  const r = anchorFinding(mkFinding({ quote: "const x = compute();" }), [f]);
+  eq("縮排不同仍可定位", r.anchor?.startLine, 2);
+}
+{
+  const f = mkFile("/src/app.ts", ["a();", "b();", "a();"], [1, 2, 3]);
+  const r = anchorFinding(mkFinding({ quote: "a();" }), [f]);
+  eq("重複 quote 且無 context → 判定歧義", r.failure, "quote-ambiguous");
+  check("歧義時不回傳 anchor（不猜行號）", r.anchor === undefined);
+}
+{
+  const f = mkFile("/src/app.ts", ["a();", "b();", "a();", "c();"], [1, 2, 3, 4]);
+  const r = anchorFinding(
+    mkFinding({ quote: "a();", context_after: "c();" }),
+    [f],
+  );
+  eq("context_after 消歧 → 第 3 行", r.anchor?.startLine, 3);
+}
+{
+  const f = mkFile("/src/app.ts", ["a();", "b();", "a();", "c();"], [1, 2, 3, 4]);
+  const r = anchorFinding(mkFinding({ quote: "a();", context_before: "b();" }), [f]);
+  eq("context_before 消歧 → 第 3 行", r.anchor?.startLine, 3);
+}
+{
+  const f = mkFile("/src/app.ts", ["one();", "two();"], [1]);
+  const r = anchorFinding(mkFinding({ quote: "nonexistent();" }), [f]);
+  eq("找不到 quote → fail-closed", r.failure, "quote-not-found");
+}
+{
+  const f = mkFile("/src/app.ts", ["a();"], [1]);
+  const r = anchorFinding(mkFinding({ file: "/other/file.ts", quote: "a();" }), [f]);
+  eq("檔案不在 diff 中", r.failure, "file-not-in-diff");
+}
+{
+  // A finding about untouched code far from any hunk is not this PR's business.
+  const rightLines = Array.from({ length: 60 }, (_, i) => `line${i + 1}();`);
+  const leftLines = [...rightLines];
+  leftLines[0] = "old();";
+  const edits = diffLines(leftLines, rightLines);
+  const { hunks, changedRightLines } = buildHunks(leftLines, rightLines, edits);
+  const f: FileDiff = {
+    path: "/src/app.ts",
+    changeType: "edit",
+    hunks,
+    rightLines,
+    leftLines,
+    changedRightLines,
+    binary: false,
+    truncated: false,
+    language: "typescript",
+  };
+  const r = anchorFinding(mkFinding({ quote: "line50();" }), [f]);
+  eq("變更範圍外 → 拒絕", r.failure, "outside-changed-lines");
+}
+{
+  const f = mkFile("/src/app.ts", ["if (a) {", "  doThing();", "}"], [1, 2, 3]);
+  const r = anchorFinding(mkFinding({ quote: "if (a) {\n  doThing();" }), [f]);
+  eq("多行 quote 起始行", r.anchor?.startLine, 1);
+  eq("多行 quote 結束行", r.anchor?.endLine, 2);
+}
+{
+  // CRLF content vs a quote the model echoed without the \r.
+  const f = mkFile("/src/app.ts", ["a();\r", "target();\r", "b();\r"], [2]);
+  const r = anchorFinding(mkFinding({ quote: "target();" }), [f]);
+  eq("CRLF 檔案仍可定位", r.anchor?.startLine, 2);
+}
+{
+  const f = mkFile("/src/deep/nested/app.ts", ["x();"], [1]);
+  check("路徑後綴匹配", resolveFile("deep/nested/app.ts", [f])?.path === "/src/deep/nested/app.ts");
+  check("basename 匹配", resolveFile("app.ts", [f])?.path === "/src/deep/nested/app.ts");
+  check("不存在的檔案回傳 undefined", resolveFile("nope.ts", [f]) === undefined);
+}
+{
+  const a = mkFile("/src/a.ts", ["x();"], [1]);
+  const b = mkFile("/lib/a.ts", ["x();"], [1]);
+  check("同名檔案有歧義時不亂猜", resolveFile("a.ts", [a, b]) === undefined);
+}
+{
+  // The scenario that motivated the whole project: an identical line exists both in
+  // untouched code and in the new code. Naive matching takes the first hit and the comment
+  // lands on the wrong function.
+  const rightLines = ["import x;", "", "def helper():", "    return 1", "", "def main():", "    return 1"];
+  const leftLines = ["import x;", "", "def helper():", "    return 1"];
+  const { hunks, changedRightLines } = buildHunks(leftLines, rightLines, diffLines(leftLines, rightLines));
+  const f: FileDiff = {
+    path: "/src/m.py",
+    changeType: "edit",
+    hunks,
+    rightLines,
+    leftLines,
+    changedRightLines,
+    binary: false,
+    truncated: false,
+    language: "python",
+  };
+  const r = anchorFinding(
+    mkFinding({ file: "/src/m.py", quote: "    return 1", context_before: "def main():" }),
+    [f],
+  );
+  eq("重複行優先錨定在變更處（第 7 行而非第 4 行）", r.anchor?.startLine, 7);
+}
+
+// --- URL parsing ---
+section("PR URL 解析");
+{
+  const r = parsePrUrl("https://dev.azure.com/myorg/MyProject/_git/my-repo/pullrequest/1234");
+  eq("org", r.org, "myorg");
+  eq("project", r.project, "MyProject");
+  eq("repo", r.repoId, "my-repo");
+  eq("prId", r.prId, 1234);
+}
+{
+  const r = parsePrUrl("https://dev.azure.com/org/Proj%20With%20Space/_git/repo/pullrequest/7");
+  eq("URL-encoded project 名稱", r.project, "Proj With Space");
+}
+{
+  let threw = false;
+  try {
+    parsePrUrl("https://dev.azure.com/org/proj/_git/repo");
+  } catch {
+    threw = true;
+  }
+  check("缺少 pullrequest 區段時報錯", threw);
+}
+
+// --- JSON parsing ---
+section("模型輸出解析（fail-closed）");
+{
+  const r = parseJsonObject<{ findings: unknown[] }>('{"findings":[]}');
+  check("純 JSON", r.ok && Array.isArray(r.value.findings));
+}
+{
+  const r = parseJsonObject<{ a: number }>('```json\n{"a":1}\n```');
+  check("markdown fence", r.ok && r.value.a === 1);
+}
+{
+  const r = parseJsonObject<{ a: number }>('<think>推理中</think>\n{"a":2}');
+  check("think block 前綴", r.ok && r.value.a === 2);
+}
+{
+  const r = parseJsonObject<{ a: string }>('說明文字\n{"a":"含 } 括號"}\n結尾');
+  check("字串內的括號不影響平衡判斷", r.ok && r.value.a === "含 } 括號");
+}
+{
+  const r = parseJsonObject("完全不是 JSON");
+  check("非 JSON → 失敗而非丟例外", !r.ok);
+}
+{
+  const r = parseJsonObject("");
+  check("空字串 → 失敗", !r.ok);
+}
+
+// --- language / noise ---
+section("語言判定與雜訊過濾");
+eq("python", detectLanguage("/src/a.py"), "python");
+eq("java", detectLanguage("/src/A.java"), "java");
+eq("tsx", detectLanguage("/app/page.tsx"), "tsx");
+check("lockfile 是雜訊", isNoiseFile("/package-lock.json"));
+check(".next 產出是雜訊", isNoiseFile("/apps/web/.next/static/x.js"));
+check("一般 ts 可審查", isReviewable("/src/a.ts"));
+check("markdown 不進 review", !isReviewable("/README.md"));
+
+// --- payload budget ---
+section("diff 預算");
+{
+  const files = [
+    mkFile("/a.ts", ["a1();", "a2();"], [1, 2]),
+    mkFile("/b.py", ["b1()", "b2()"], [1, 2]),
+  ];
+  const p = buildDiffPayload(files, 100_000);
+  eq("預算充足時全部納入", p.includedFiles.length, 2);
+  check("payload 含檔名", p.text.includes("/a.ts") && p.text.includes("/b.py"));
+}
+{
+  const files = [
+    mkFile("/a.ts", ["a1();"], [1]),
+    mkFile("/b.ts", ["b1();"], [1]),
+  ];
+  const p = buildDiffPayload(files, 200);
+  check("超出預算時至少保留一個檔案", p.includedFiles.length >= 1);
+  check("被略過的檔案有記錄", p.includedFiles.length + p.omittedFiles.length === 2);
+  if (p.omittedFiles.length > 0) check("略過清單出現在 payload 中", p.text.includes("未納入"));
+}
+
+// --- work item HTML ---
+section("Work Item HTML 轉純文字");
+eq("<li> 變成條列", htmlToText("<ul><li>條件一</li><li>條件二</li></ul>"), "- 條件一\n- 條件二");
+eq("<br> 換行", htmlToText("a<br/>b"), "a\nb");
+eq("實體字元還原", htmlToText("&lt;tag&gt; &amp; &quot;q&quot;&nbsp;x"), '<tag> & "q" x');
+eq("數字實體", htmlToText("&#65;&#66;"), "AB");
+eq("script 被移除", htmlToText("<p>keep</p><script>evil()</script>"), "keep");
+eq("空輸入", htmlToText(undefined), "");
+check("<p> 分段", htmlToText("<p>one</p><p>two</p>").split("\n").length === 2);
+
+// --- rule globs ---
+section("規則 glob 比對");
+check("** 匹配任意深度", globToRegExp("**/*.py").test("src/a/b/c.py"));
+check("**/ 可匹配零層目錄", globToRegExp("**/*.py").test("c.py"));
+check("副檔名不符不匹配", !globToRegExp("**/*.py").test("src/a.java"));
+check("{a,b} 分支", globToRegExp("**/*.{tsx,jsx}").test("app/page.tsx"));
+check("{a,b} 另一分支", globToRegExp("**/*.{tsx,jsx}").test("app/page.jsx"));
+check("{a,b} 不匹配第三者", !globToRegExp("**/*.{tsx,jsx}").test("app/page.ts"));
+check("* 不跨目錄", !globToRegExp("src/*.ts").test("src/deep/a.ts"));
+check("目錄前綴", globToRegExp("services/payment/**").test("services/payment/api/x.java"));
+check("全域 **/*", globToRegExp("**/*").test("anything/at/all.md"));
+
+section("規則選取");
+{
+  const rules = [
+    { name: "_base.md", applyTo: ["**/*"], body: "base" },
+    { name: "java.md", applyTo: ["**/*.java"], body: "java" },
+    { name: "python.md", applyTo: ["**/*.py"], body: "python" },
+  ];
+  const picked = selectRules(rules, ["/src/Main.java", "/README.md"]);
+  eq("只載入相關語言規則", picked.map((r) => r.name).sort(), ["_base.md", "java.md"]);
+  check("未變更的語言規則不載入", !picked.some((r) => r.name === "python.md"));
+  const none = selectRules(rules, []);
+  eq("無變更檔案時不載入任何規則", none.length, 0);
+}
+{
+  // The shipped baseline must actually parse and apply everywhere.
+  const base = loadRules().find((r) => r.name === "_base.md");
+  check("內建 _base.md 可載入", base !== undefined);
+  if (base) {
+    eq("_base.md applyTo 為全域", base.applyTo, ["**/*"]);
+    check("_base.md 內容含 Fowler smells", base.body.includes("Feature Envy"));
+    check("_base.md frontmatter 已剝除", !base.body.startsWith("---"));
+  }
+}
+
+console.log(`\n結果：${passed} 通過、${failed} 失敗`);
+process.exit(failed > 0 ? 1 : 0);

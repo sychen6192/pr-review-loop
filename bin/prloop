@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Wrapper so prloop can be run from any directory.
+set -euo pipefail
+TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec npx tsx "$TOOL_DIR/loop.ts" "$@"

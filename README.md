@@ -1,0 +1,180 @@
+# prloop — Azure DevOps PR 自動審查
+
+對 Azure DevOps 的 Pull Request 執行自動程式碼審查。控制流完全在 TypeScript：模型只負責
+「找出問題並引用出問題的程式碼」，**行號、去重、發佈與否一律由 pipeline 確定性決定**。
+
+完整設計與研究依據見 [PROPOSAL.md](./PROPOSAL.md)。
+
+## 目前進度
+
+| 里程碑 | 內容 | 狀態 |
+| --- | --- | --- |
+| M1 | ADO REST 直連、本地 diff、quote 行號錨定、sticky summary + inline 留言 | ✅ 已完成 |
+| M2 | 兩軸審查：Work Item 需求檢查（先讀 req 再審）+ 程式碼檢查，獨立額度不互相排擠 | ✅ 已完成 |
+| M3 | 多模型平行 finder + 跨家族 skeptic 對抗 + 共識投票 | ⬜ |
+| M4 | 規則層（glob-scoped，已有 Fowler baseline）+ Python / Java / Next.js 靜態分析 profile | 🔶 規則層完成，靜態工具待做 |
+| M5 | iteration 增量審查、thread 自動 resolve、dismissal 記錄 | ⬜ |
+
+M1+M2 已可對真實 PR 端到端執行:先讀需求、再審程式碼,兩軸分開呈現,留言錨定正確。
+
+## 兩軸審查
+
+一個 PR 可以在一軸過、另一軸掛:遵守所有規範但做錯東西,或做對事情但寫法有問題。
+兩軸若合併排名,在留言上限之下會互相排擠——「需求根本沒做完」會被三個 critical
+的 code 問題擠掉。因此 prloop 讓兩軸**各自獨立執行、各自獨立額度、summary 分區呈現**,
+而且兩軸的模型看不到對方的結果,避免一軸被拿來替另一軸開脫。
+
+- **需求軸**:抓 PR 連結的 Work Item(含向上一層找 acceptance criteria),逐條判定
+  `satisfied / missing / partial / misunderstood / not-verifiable`,另外列出範圍外變更。
+  判定的是「失敗的方式」而非「完成百分比」——後者給不出行動指引。
+- **程式碼軸**:9 類 finding × 4 級嚴重度,嚴重度用依序判斷的決策鏈
+  (最關鍵的分界是「有沒有繞過方式」),不是形容詞。
+
+## 為什麼不用 azure-devops-mcp
+
+留言貼錯行是結構性問題，不是設定問題：MCP 是 REST 的薄包裝，不做錨點驗證、沒有 iteration
+簿記，舊版甚至取不到檔案行內容，模型只能自行推測行號（見 azure-devops-mcp #793、#868）。
+prloop 因此直連 REST，並且**模型的輸出 schema 裡根本沒有行號欄位**：
+
+1. 模型只回傳 `quote` —— 逐字複製出問題的原始碼。
+2. pipeline 依 blob objectId 取得該 iteration 的**原始 bytes**（不經本地 checkout，避開
+   CRLF/BOM 正規化差異），在其中搜尋 quote 得到絕對行號。
+3. 同一段程式碼出現多次時，用模型提供的前後文消歧，再優先選擇落在本次變更行上的位置。
+4. 找不到或無法消歧 → **降級進 summary 留言**，絕不猜行號貼上去。
+
+副作用：引用了不存在的程式碼 = 幻覺，會在這一步被自動攔掉。
+
+## 前置需求
+
+- Node.js 20 以上（使用內建 fetch）。
+- Azure DevOps 認證，以下**二擇一**：
+  - **PAT**：需要 **Code (Read & Write)** scope，填入 `PRR_ADO_PAT`。在 pipeline 中可改用
+    `$(System.AccessToken)`，但要授予 Build Service 對該 repo 的 Contribute to pull requests 權限。
+  - **az CLI**：不設 PAT，改為 `az login` 即可，工具會自動用你的登入身分取 token。
+    組織政策不發 PAT、或不想把 PAT 落地到 `.env` 時用這個。
+- 一個 OpenAI 相容的模型 endpoint：LiteLLM proxy、vLLM 或 Ollama 的 `/v1`。
+
+## 安裝
+
+```bash
+git clone <repo> prloop && cd prloop
+npm install
+cp .env.example .env      # 填入 PRR_ADO_PAT 與 PRR_LLM_BASE_URL
+npm run check             # 型別檢查 + 離線 selftest
+```
+
+選用：把 wrapper 加進 PATH。
+
+```bash
+echo 'export PATH="$PATH:'$(pwd)'/bin"' >> ~/.bashrc && source ~/.bashrc
+```
+
+## 第一次執行
+
+```bash
+npx tsx scripts/doctor.ts '<PR URL>' --smoke   # preflight，並實測模型一次
+prloop '<PR URL>' --dry-run                    # 只計算不發佈，先看結果對不對
+prloop '<PR URL>'                              # 正式發佈留言
+```
+
+PR URL 格式為 `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`。
+
+**強烈建議第一次先跑 `--dry-run`**，確認 finding 的行號與內容正確，再開放發佈。
+
+退出碼：`0` 兩軸皆無阻擋項目、`2` 有未滿足的驗收條件或 critical/high 問題、`1` 致命錯誤。
+
+## 每次執行的產出
+
+`runs/<org>/<project>/<repo>/pr-<id>/iter-<N>-<時間戳>/`：
+
+| 檔案 | 內容 |
+| --- | --- |
+| `context.json` | PR 資訊、iteration、納入與略過的檔案清單 |
+| `finder-prompt.md` | 送給模型的完整 prompt |
+| `finder-*-raw.txt` | 每顆模型的原始輸出（debug 幻覺與格式問題用） |
+| `requirement.json` | 需求軸結果：work items、逐條判定、範圍外變更 |
+| `requirement-prompt.md` / `requirement-raw.txt` | 需求軸的 prompt 與原始輸出 |
+| `findings.json` | 定位後的 findings：inline / 未達門檻 / 無法定位 |
+| `publish.json` | 實際發佈結果與失敗原因 |
+
+## 參數
+
+全部為環境變數、全部選填，詳見 `.env.example`。常用的幾個：
+
+| 變數 | 預設 | 說明 |
+| --- | --- | --- |
+| `PRR_ADO_PAT` | - | PAT，需 Code (Read & Write) scope。不設則走 az CLI |
+| `PRR_AUTH_MODE` | `auto` | `auto`（有 PAT 用 PAT，否則 az）｜`pat`｜`azcli` |
+| `PRR_LLM_BASE_URL` | `http://localhost:4000/v1` | OpenAI 相容 endpoint |
+| `PRR_FINDER_MODELS` | `qwen3-coder` | 逗號分隔。M3 起請填多顆不同家族的模型 |
+| `PRR_MAX_INLINE_COMMENTS` | 10 | 程式碼軸的 inline 留言上限 |
+| `PRR_MAX_INLINE_REQ_COMMENTS` | 3 | 需求軸的 inline 留言上限（與程式碼軸各自獨立） |
+| `PRR_REQ_MODEL` | 同 finder | 需求軸模型。驗收條件長時建議指定較強的模型 |
+| `PRR_SKIP_REQUIREMENT` | - | 1 = 跳過需求軸 |
+| `PRR_MIN_INLINE_SEVERITY` | `medium` | 低於此嚴重度只進 summary，不留 inline |
+| `PRR_DRY_RUN` | - | 1 = 只計算不發佈 |
+| `PRR_POST_STATUS` | - | 1 = 同時回報 PR status（需搭配 branch policy 才會擋 merge） |
+| `PRR_LLM_STRUCTURED` | 1 | 0 = 不送 `response_format`（後端 schema 支援有問題時） |
+
+## 留言行為
+
+- **一則 sticky summary**：原地更新，不會每次推送都新增一則。狀態設為 closed，不會觸發
+  「comment resolution required」policy。
+- **少量 inline 留言**：狀態為 active，帶 `changeTrackingId` 與 `iterationContext`，
+  推送新 commit 後 ADO 會自行追蹤位置。
+- **不重複留言**：每則留言嵌入 finding 指紋，重跑時已留過的自動略過。
+- **乾淨的 PR 會安靜**：沒發現問題時只更新 summary 說明，不製造噪音。
+- 風格、命名、格式問題一律不留言 —— 那是 linter 的工作（M4 會納入）。
+
+## 審查規則（rules/）
+
+`rules/*.md` 是可直接編輯的審查規則,每份用 frontmatter 的 `applyTo` 指定 glob。
+**只有 glob 命中本次變更檔案的規則才會進 prompt**——沒改到 Java 就完全不載入 Java 規則,
+所以規則集可以持續長大而不會撐爆每次的 prompt。
+
+```markdown
+---
+applyTo: "**/*.java"
+---
+# Java 審查規則
+...
+```
+
+內建 `_base.md`(全語言適用)收錄《Refactoring》第 3 章的 12 個 code smell,
+並綁定兩條約束:repo 自己的規範永遠覆蓋 baseline、每個 smell 都是判斷題而非硬性違規
+(severity 上限 medium)。第二條是防過度回報的內建機制。
+
+用 `PRR_RULES_DIR` 可指向別處的規則目錄。
+
+## Troubleshooting
+
+**先跑 `npx tsx scripts/doctor.ts '<PR URL>' --smoke`**，多數問題會直接指出修法。
+
+- **203 / 登入頁錯誤。** PAT 無效或缺少 scope（需要 Code Read & Write）。若走 az CLI，
+  多半是 `az login` 過期或登入到錯的 tenant，重跑 `az login` 即可。
+- **az 相關錯誤。** `doctor` 會顯示目前的認證模式與 az 登入身分。要強制走某一種認證，
+  設 `PRR_AUTH_MODE=pat` 或 `azcli`。az 的 token 會在程序內快取，不會每次請求都呼叫 az。
+- **留言貼到錯誤的行。** 這正是本工具要根治的問題。若仍發生，檢查 `findings.json` 中該筆
+  的 `anchor`，並比對 `runs/` 內的 `finder-*-raw.txt`：若模型的 quote 與檔案內容不同
+  （例如自行改寫了縮排或內容），錨定會失敗而非貼錯位置。真的貼錯請附上該次 run 目錄回報。
+- **大量 findings 落在「無法定位」。** 通常是模型不照指示逐字複製 quote。優先確認
+  `PRR_LLM_STRUCTURED=1` 且後端真的支援 guided decoding；弱模型在沒有 schema 強制時
+  格式服從度會明顯下降。
+- **模型輸出無法解析。** 後端未支援 `response_format`。改用 vLLM（xgrammar guided
+  decoding）或 LiteLLM proxy；或設 `PRR_LLM_STRUCTURED=0` 觀察原始輸出再調整。
+- **留言太多。** 調低 `PRR_MAX_INLINE_COMMENTS`，或把 `PRR_MIN_INLINE_SEVERITY` 提到 `high`。
+- **想擋住 merge。** 設 `PRR_POST_STATUS=1`，並在 branch policy 加入 genre `prloop` /
+  name `ai-review` 的 status 檢查。不要用 bot 投 -10 票的方式，會與 reviewer policy 打架。
+- **PR 很大導致部分檔案沒被審查。** summary 會列出未納入的檔案。調高 `PRR_MAX_DIFF_CHARS`
+  或提高模型 context 上限。
+
+## 開發
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm run selftest    # 離線測試：diff、錨定、URL 解析、JSON 解析
+npm run check       # 兩者都跑
+```
+
+`scripts/selftest.ts` 是行號錨定的回歸網。**改動 `libs/diff.ts` 或 `anchoring/locate.ts`
+之後一定要跑**，其中的斷言直接對應「留言貼錯行」的各種成因。

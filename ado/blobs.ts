@@ -1,0 +1,53 @@
+// Blob fetching. This module is the reason anchors are trustworthy: we read the exact
+// bytes ADO stores for the iteration, so line counting matches what the PR UI shows.
+// Reading from a local checkout instead would apply core.autocrlf and silently shift
+// every line number after the first CRLF difference.
+import { adoGetBytes, repoBase } from "./client";
+import { MAX_FILE_BYTES } from "../config";
+import type { PrRef } from "../libs/types";
+
+export interface BlobContent {
+  lines: string[];
+  binary: boolean;
+  truncated: boolean;
+  bytes: number;
+}
+
+const EMPTY: BlobContent = { lines: [], binary: false, truncated: false, bytes: 0 };
+
+// A NUL byte in the first 8000 bytes is git's own binary heuristic; good enough here.
+function looksBinary(buf: Buffer): boolean {
+  const n = Math.min(buf.length, 8000);
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
+  return false;
+}
+
+/**
+ * Splits raw bytes into lines the way a diff viewer counts them.
+ * - Keeps a trailing \r on the line content (CRLF files stay byte-faithful).
+ * - Strips a leading UTF-8 BOM, which would otherwise corrupt column offsets on line 1.
+ * - A trailing newline does NOT create a phantom final line.
+ */
+export function splitLines(buf: Buffer): string[] {
+  let text = buf.toString("utf8");
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  if (text === "") return [];
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+export async function getBlob(ref: PrRef, objectId: string | undefined): Promise<BlobContent> {
+  if (!objectId) return EMPTY;
+  const buf = await adoGetBytes(`${repoBase(ref)}/blobs/${objectId}`, {
+    query: { $format: "octetStream" },
+    accept: "application/octet-stream",
+  });
+  if (looksBinary(buf)) {
+    return { lines: [], binary: true, truncated: false, bytes: buf.length };
+  }
+  if (buf.length > MAX_FILE_BYTES) {
+    return { lines: [], binary: false, truncated: true, bytes: buf.length };
+  }
+  return { lines: splitLines(buf), binary: false, truncated: false, bytes: buf.length };
+}

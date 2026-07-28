@@ -362,13 +362,13 @@ pr-review-loop/
 
 ## 11. 分階段交付
 
-- **M1(可用骨架)**:intake(REST 直連 + 本地 diff + 行號索引)→ 單模型 finder →
+- ✅ **M1(可用骨架)**:intake(REST 直連 + 本地 diff + 行號索引)→ 單模型 finder →
   quote 錨定 → sticky summary + inline threads。先解「行號歪掉」與「不經 MCP」。
-- **M2(需求 gate)**:Work Item → AC 覆蓋矩陣 → summary 置頂 + PR Status。
-- **M3(對抗與投票)**:多 finder 平行 + skeptic + 共識裁決 + no-comment gate。
-- **M4(規則層 + 靜態工具層)**:§7.4 的 glob-scoped 規則檔、既有慣例檔(CLAUDE.md /
+- ✅ **M2(需求 gate)**:Work Item → AC 覆蓋矩陣 → summary 置頂 + PR Status。
+- ✅ **M3(對抗與投票)**:多 finder 平行 + skeptic + 共識裁決 + no-comment gate。
+- ✅ **M4(規則層 + 靜態工具層)**:§7.4 的 glob-scoped 規則檔、既有慣例檔(CLAUDE.md /
   AGENTS.md / .cursor/rules)自動載入;三語言 profile、SARIF 正規化、diff filter、LLM triage。
-- **M5(增量與生命週期)**:iterations $compareTo 增量 review、fingerprint 跨 push
+- ✅ **M5(增量與生命週期)**:iterations $compareTo 增量 review、fingerprint 跨 push
   去重、thread 自動 resolve(被 flag 的程式碼已改就關)、dismissal 記錄。
 
 每個里程碑都端到端可跑(對真 PR 發得出正確錨定的 comment),不是水平切層。

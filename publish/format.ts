@@ -4,6 +4,7 @@ import { BOT_MARKER, MAX_INLINE_COMMENTS, MIN_INLINE_SEVERITY } from "../config"
 import type { AnchoredFinding, ReqVerdict, RequirementResult } from "../libs/types";
 import type { AggregateResult } from "../gates/aggregate";
 import type { ReviewContext } from "../ado/intake";
+import type { StaticResult } from "../gates/static";
 
 export const SUMMARY_MARKER = "<!-- prloop:summary -->";
 export const fpMarker = (fp: string) => `<!-- prloop:fp=${fp} -->`;
@@ -78,6 +79,7 @@ export interface SummaryInput {
   finderErrors: Array<{ model: string; error: string }>;
   omittedFiles: string[];
   appliedRules: string[];
+  staticResult?: StaticResult;
   durationSec: number;
   runDir: string;
 }
@@ -217,6 +219,16 @@ export function renderSummary(input: SummaryInput): string {
   }
   if (input.appliedRules.length > 0) {
     notes.push(`套用的審查規則：${input.appliedRules.join("、")}`);
+  }
+  const sr = input.staticResult;
+  if (sr?.skippedReason) {
+    notes.push(`靜態分析未執行：${sr.skippedReason}`);
+  } else if (sr && sr.ranTools.length > 0) {
+    notes.push(
+      `靜態分析工具：${sr.ranTools.join("、")}` +
+        (sr.suppressedCount > 0 ? `（另有 ${sr.suppressedCount} 筆風格問題未留言，交由 linter 處理）` : ""),
+    );
+    for (const s of sr.skipped) notes.push(`略過工具 ${s.tool}：${s.reason}`);
   }
   for (const e of input.finderErrors) {
     notes.push(`模型 ${e.model} 本次未產出結果：${e.error}`);

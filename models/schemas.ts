@@ -101,3 +101,27 @@ export const VERDICT_SCHEMA = {
     suggested_severity: { type: "string", enum: [...SEVERITIES] },
   },
 } as const;
+
+// Triage of static-analysis findings. The model judges tool output in context; it never
+// invents findings, so the schema is a verdict list keyed back to the input indexes.
+export const TRIAGE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["results"],
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["index", "keep", "reason"],
+        properties: {
+          index: { type: "number" },
+          keep: { type: "boolean" },
+          reason: { type: "string" },
+          severity: { type: "string", enum: [...SEVERITIES] },
+        },
+      },
+    },
+  },
+} as const;

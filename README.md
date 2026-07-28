@@ -12,10 +12,10 @@
 | M1 | ADO REST 直連、本地 diff、quote 行號錨定、sticky summary + inline 留言 | ✅ 已完成 |
 | M2 | 兩軸審查：Work Item 需求檢查（先讀 req 再審）+ 程式碼檢查，獨立額度不互相排擠 | ✅ 已完成 |
 | M3 | 多模型平行 finder + 跨家族 skeptic 對抗 + 共識裁決 | ✅ 已完成 |
-| M4 | 規則層（glob-scoped，已有 Fowler baseline）+ Python / Java / Next.js 靜態分析 profile | 🔶 規則層完成，靜態工具待做 |
-| M5 | iteration 增量審查、thread 自動 resolve、dismissal 記錄 | ⬜ |
+| M4 | 規則層 + Python / Java / Next.js 靜態分析整合與 LLM triage | ✅ 已完成 |
+| M5 | iteration 增量審查、thread 自動 resolve、dismissal 記錄 | ✅ 已完成 |
 
-M1–M3 已可對真實 PR 端到端執行:先讀需求、再審程式碼,兩軸分開呈現,留言錨定正確。
+M1–M5 全數完成。可對真實 PR 端到端執行:先讀需求、再審程式碼,兩軸分開呈現,留言錨定正確。
 
 ## 兩軸審查
 
@@ -93,6 +93,8 @@ PR URL 格式為 `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/
 | `finder-prompt.md` | 送給模型的完整 prompt |
 | `finder-*-raw.txt` | 每顆模型的原始輸出（debug 幻覺與格式問題用） |
 | `requirement.json` | 需求軸結果：work items、逐條判定、範圍外變更 |
+| `static.json` / `static-findings.json` | 靜態工具原始結果與 triage 後的 findings |
+| `skeptic.json` | 每筆 finding 的對抗驗證判定與理由 |
 | `requirement-prompt.md` / `requirement-raw.txt` | 需求軸的 prompt 與原始輸出 |
 | `findings.json` | 定位後的 findings：inline / 未達門檻 / 無法定位 |
 | `publish.json` | 實際發佈結果與失敗原因 |
@@ -169,6 +171,47 @@ finder 反而被要求**全部回報、包含不確定的**(要求模型自我�
 npm run setup
 PRR_RUNNER=opencode prloop '<PR URL>' --dry-run
 ```
+
+## 靜態分析（需要工作目錄）
+
+linter 需要原始碼落在磁碟上，但 prloop 平常是直接從 Azure DevOps 讀 blob 的。
+因此靜態分析需要 `PRR_WORKDIR` 指向 PR 來源分支的 checkout——在 pipeline 中
+就是 agent 自己的工作目錄。沒設就整段跳過，並在 summary 說明原因。
+
+工具結果**先過 diff filter**（只留落在本次變更行上的），再依工具特性分三層：
+
+| 層級 | 工具 | 處理方式 |
+| --- | --- | --- |
+| **事實** | `tsc`、`mypy` | 型別錯誤是事實，直接留言，不叫模型重新推導 |
+| **triage** | `bandit`、`PMD`、`SpotBugs`、`ruff`、`eslint` | 有 recall 但誤報高，交由模型判斷實際脈絡下是否成立 |
+| **抑制** | `checkstyle`、格式類規則 | 永不留言，只在 summary 計數 |
+
+triage 那層是實證最強的混合做法（Semgrep 誤報 560 → 64）。工具負責 recall——
+它不會忘記任何一個樣式；模型補上樣式比對看不到的脈絡：這個值真的來自外部嗎、
+前面的檢查是不是讓這條路徑走不到、這個 API 用法在這個框架下是不是慣例。
+
+**未設 `PRR_TRIAGE_MODEL` 時，triage 層的結果會被丟棄而不是直接留言。** 這是刻意的
+fail-closed：未經判定的高誤報結果就是噪音。
+
+SpotBugs 需要編譯後的 class，找不到 `target/classes` 就跳過——對著過期的 class 掃描
+會回報早就修好的問題。
+
+## 增量審查與留言生命週期
+
+```bash
+prloop '<PR URL>' --since auto    # 只審查上次之後的新 commit
+```
+
+`--since auto` 從我們自己的 summary 留言裡讀回上次審查的 iteration（狀態存在 PR 上，
+不存在磁碟上——這樣 pipeline agent、你的筆電、cron 機器不需要共用檔案系統）。
+
+每次發佈前還會做兩件事：
+
+- **自動關閉過時留言**：我們自己貼的、指向的程式碼已經不存在的 thread 會被標為 fixed。
+  判定條件刻意收得很窄——錯誤關閉一個還活著的問題，比留一則過時留言讓人手動關掉更糟。
+- **記錄 dismissal**：被人工標記為 wontFix / byDesign 的留言會被記錄下來。
+  這是未來收斂規則的原始素材——某一類 findings 老是被駁回，就代表不該再回報。
+  現在只記錄不行動：用少量樣本去建排除規則會過度擬合。
 
 ## 審查規則（rules/）
 

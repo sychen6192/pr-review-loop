@@ -9,6 +9,9 @@ import {
   MAX_INLINE_COMMENTS,
   MIN_INLINE_SEVERITY,
   OPENCODE_AGENT,
+  SKIP_STATIC,
+  TRIAGE_MODEL,
+  WORKDIR,
   OPENCODE_BIN,
   REQUIRE_CORROBORATION,
   RUNNER_KIND,
@@ -17,7 +20,9 @@ import {
 } from "../config";
 import { adoGet, parsePrUrl, prBase } from "../ado/client";
 import { describeAuthMode } from "../ado/auth";
+import { existsSync } from "node:fs";
 import { commandExists, run } from "../libs/shell";
+import { PROFILES } from "../profiles";
 import { createRunner } from "../models/runner";
 import { FINDINGS_SCHEMA } from "../models/schemas";
 import { parseJsonObject } from "../libs/json";
@@ -102,6 +107,35 @@ async function main() {
   }
   if (!REQUIRE_CORROBORATION) {
     warn("已關閉佐證要求（PRR_REQUIRE_CORROBORATION=0）", "單一模型未經驗證的 findings 會直接留言，誤報率會上升");
+  }
+
+  console.log("\n靜態分析");
+  if (SKIP_STATIC) {
+    ok("已停用", "PRR_SKIP_STATIC=1");
+  } else if (!WORKDIR) {
+    warn(
+      "未設定 PRR_WORKDIR，靜態分析不會執行",
+      "指向 PR 來源分支的 checkout；在 pipeline 中就是 agent 的工作目錄",
+    );
+  } else if (!existsSync(WORKDIR)) {
+    bad(`PRR_WORKDIR 不存在：${WORKDIR}`, "確認路徑，或清空以停用靜態分析");
+  } else {
+    ok("工作目錄", WORKDIR);
+    const tools = [...new Set(PROFILES.flatMap((p) => p.tools.map((t) => t.bin)))];
+    const found: string[] = [];
+    const missing: string[] = [];
+    for (const t of tools) ((await commandExists(t)) ? found : missing).push(t);
+    if (found.length > 0) ok("可用的工具", found.join("、"));
+    if (missing.length > 0) warn(`PATH 中找不到：${missing.join("、")}`, "對應的工具會被略過，不影響其他階段");
+    if (!TRIAGE_MODEL) {
+      warn(
+        "未設定 PRR_TRIAGE_MODEL",
+        "bandit / PMD / eslint 等高誤報工具的結果會被丟棄而非留言（刻意 fail-closed）。" +
+          "設定後才會由模型判定其真偽",
+      );
+    } else {
+      ok("triage 模型", TRIAGE_MODEL);
+    }
   }
 
   console.log("\n發佈設定");

@@ -11,11 +11,11 @@
 | --- | --- | --- |
 | M1 | ADO REST 直連、本地 diff、quote 行號錨定、sticky summary + inline 留言 | ✅ 已完成 |
 | M2 | 兩軸審查：Work Item 需求檢查（先讀 req 再審）+ 程式碼檢查，獨立額度不互相排擠 | ✅ 已完成 |
-| M3 | 多模型平行 finder + 跨家族 skeptic 對抗 + 共識投票 | ⬜ |
+| M3 | 多模型平行 finder + 跨家族 skeptic 對抗 + 共識裁決 | ✅ 已完成 |
 | M4 | 規則層（glob-scoped，已有 Fowler baseline）+ Python / Java / Next.js 靜態分析 profile | 🔶 規則層完成，靜態工具待做 |
 | M5 | iteration 增量審查、thread 自動 resolve、dismissal 記錄 | ⬜ |
 
-M1+M2 已可對真實 PR 端到端執行:先讀需求、再審程式碼,兩軸分開呈現,留言錨定正確。
+M1–M3 已可對真實 PR 端到端執行:先讀需求、再審程式碼,兩軸分開呈現,留言錨定正確。
 
 ## 兩軸審查
 
@@ -125,6 +125,50 @@ PR URL 格式為 `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/
 - **不重複留言**：每則留言嵌入 finding 指紋，重跑時已留過的自動略過。
 - **乾淨的 PR 會安靜**：沒發現問題時只更新 summary 說明，不製造噪音。
 - 風格、命名、格式問題一律不留言 —— 那是 linter 的工作（M4 會納入）。
+
+## 多模型對抗驗證
+
+單顆開源模型做 code review 的誤報率很高,所以精度不是靠「叫模型小心一點」得來的——
+finder 反而被要求**全部回報、包含不確定的**(要求模型自我審查會明顯傷害 recall),
+過濾交給下游三道獨立的關卡:
+
+1. **錨定**:引用不存在的程式碼 = 幻覺,在定位階段就被攔掉。
+2. **對抗驗證(skeptic)**:每個 finding 交給**不同家族**的模型,任務是「推翻它」而不是
+   「評估它」。被問「這對嗎?」的驗證者會附和;被要求「證明這是錯的」才會真的去檢查。
+   而且 skeptic **看不到 finder 的推理過程**,只看到指控和程式碼——共用推理會造成錨定效應,
+   驗證者會順著原作者的思路走而不是重新判斷。
+3. **共識裁決**:要留 inline 留言需要佐證——**兩個模型獨立發現**,或**通過對抗驗證**。
+   單一模型提出且沒被驗證過的 finding 只會列在 summary,不佔用留言額度。
+
+幾個刻意的不對稱設計:
+
+- skeptic 可以**下修**嚴重度,不能上修。finder 決定上限,讓驗證者能加碼會把它存在的意義
+  (對抗附和傾向)還回去。
+- skeptic 壞掉或回傳無法解析時 **fail-open**(finding 存活)。壞掉的驗證者不該有刪除
+  真實 bug 的權力;共識裁決那關仍然會要求佐證。
+- 錨定失敗則相反,是 **fail-closed**。貼錯行的傷害大於漏報。
+
+設定 `PRR_SKEPTIC_MODELS` 才會啟用。**務必與 finder 用不同家族的模型**——同家族的驗證者
+共用 finder 的盲點,最該抓到的錯誤反而會被確認。`doctor` 會檢查並警告這件事。
+
+## Runner
+
+兩種:
+
+- **`openai`(預設)**:直接打 OpenAI 相容 endpoint(LiteLLM proxy / vLLM / Ollama)。
+  支援 **guided decoding**,schema 由推論引擎在 token 層強制——這是弱模型能穩定輸出
+  合法 JSON 的關鍵。
+- **`opencode`**:透過 opencode CLI,沿用你既有的 provider 設定。
+  **但 opencode 不會把 `response_format` 傳給後端**,schema 從「引擎強制」降級為
+  「prompt 要求」,弱模型的格式服從度會下降。
+
+用 opencode 前先跑 `npm run setup` 安裝 agent 定義(所有工具關閉——審查所需的內容
+全部由 prloop 注入,執行環境裡沒有目標專案的原始碼可讀)。
+
+```bash
+npm run setup
+PRR_RUNNER=opencode prloop '<PR URL>' --dry-run
+```
 
 ## 審查規則（rules/）
 

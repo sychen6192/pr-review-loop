@@ -3,9 +3,10 @@
 // is made by code here (design principle: the loop never hands control to a model).
 import { SKIP_REQUIREMENT } from "./config";
 import { buildReviewContext, type ReviewContext } from "./ado/intake";
-import { aggregate, type AggregateResult } from "./gates/aggregate";
+import { anchorAndDedupe, finalize, type AggregateResult } from "./gates/aggregate";
 import { runFinders } from "./gates/finder";
 import { runRequirementGate, toRequirementFindings } from "./gates/requirement";
+import { applyVerdicts, runSkeptic } from "./gates/skeptic";
 import { createRunDir } from "./libs/artifacts";
 import { banner, log } from "./libs/log";
 import type { AnchoredFinding, ModelRunner, PrRef, RequirementResult } from "./libs/types";
@@ -56,7 +57,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       inline: [],
       belowBar: [],
       degraded: [],
-      stats: { raw: 0, afterDedupe: 0, anchored: 0, inline: 0, byFailure: {} },
+      stats: { raw: 0, afterDedupe: 0, anchored: 0, survived: 0, inline: 0, byFailure: {} },
     };
     return {
       ctx,
@@ -101,8 +102,25 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   });
   run.saveJson("finder-outputs.json", outputs.map((o) => ({ ...o, raw: undefined })));
 
-  banner("Step 3/4：定位與彙整");
-  const agg = aggregate(outputs, ctx.files);
+  banner("Step 3/4：定位、對抗驗證與裁決");
+  const candidates = anchorAndDedupe(outputs, ctx.files);
+
+  // Adversarial verification. The finder ran in coverage mode and is expected to
+  // over-report; this is the stage that does the killing.
+  const outcomes = await runSkeptic(opts.runner, candidates.merged, ctx.files);
+  const survivors = applyVerdicts(outcomes);
+  run.saveJson(
+    "skeptic.json",
+    outcomes.map((o) => ({
+      file: o.finding.file,
+      line: o.finding.anchor?.startLine,
+      claim: o.finding.claim,
+      killed: o.killed,
+      verdicts: o.verdicts,
+    })),
+  );
+
+  const agg = finalize(candidates, survivors);
   const reqFindings = toRequirementFindings(req, ctx.files);
   // Attach the tracking id ADO needs for each thread to survive future pushes.
   for (const f of [...agg.inline, ...reqFindings]) {

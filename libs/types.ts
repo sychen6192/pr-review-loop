@@ -170,6 +170,11 @@ export interface AnchoredFinding extends RawFinding {
   // Stable identity across pushes, for dedup against already-posted threads.
   fingerprint: string;
   changeTrackingId?: number;
+  // Adversarial verification results (M3); undefined when the skeptic stage didn't run.
+  skepticVerdicts?: number;
+  skepticRefuted?: number;
+  // Why this finding did not reach an inline comment, when it didn't.
+  suppressedBy?: "severity" | "cap" | "no-corroboration";
 }
 
 // --- Model runner (the interface that keeps the core free of SDK imports) ---

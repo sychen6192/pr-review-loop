@@ -10,7 +10,9 @@ import { detectLanguage, isNoiseFile, isReviewable } from "../libs/lang";
 import { buildDiffPayload } from "../libs/payload";
 import { htmlToText } from "../libs/html";
 import { globToRegExp, loadRules, selectRules } from "../libs/rules";
-import type { FileDiff, RawFinding } from "../libs/types";
+import { finalize } from "../gates/aggregate";
+import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
+import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 
 let passed = 0;
 let failed = 0;
@@ -392,6 +394,63 @@ section("規則選取");
     check("_base.md 內容含 Fowler smells", base.body.includes("Feature Envy"));
     check("_base.md frontmatter 已剝除", !base.body.startsWith("---"));
   }
+}
+
+// --- adversarial verification ---
+section("Skeptic 判定解析（fail-open）");
+{
+  const v = parseVerdictForTest('{"refuted":true,"reason":"這段是 try-with-resources，會自動關閉","confidence":0.9}', "test-model");
+  check("明確推翻", v.refuted && v.confidence === 0.9);
+}
+{
+  const v = parseVerdictForTest('{"refuted":false,"reason":"","confidence":0.7}', "test-model");
+  check("未推翻", !v.refuted);
+}
+{
+  // A broken verifier must not be able to delete findings.
+  const v = parseVerdictForTest("模型壞掉了不是 JSON", "test-model");
+  check("無法解析時 fail-open（不推翻）", !v.refuted);
+  check("無法解析時記錄錯誤", v.error !== undefined);
+}
+{
+  const v = parseVerdictForTest('{"refuted":false,"reason":"影響被誇大","confidence":0.8,"suggested_severity":"low"}', "test-model");
+  eq("接受嚴重度下修建議", v.suggestedSeverity, "low");
+}
+{
+  const v = parseVerdictForTest('{"refuted":false,"reason":"x","confidence":0.5,"suggested_severity":"catastrophic"}', "test-model");
+  check("無效的嚴重度被忽略", v.suggestedSeverity === undefined);
+}
+
+section("共識裁決");
+{
+  const mk = (over: Partial<AnchoredFinding>): AnchoredFinding => ({
+    category: "correctness",
+    severity: "high",
+    confidence: 0.8,
+    file: "/a.ts",
+    quote: "x();",
+    claim: "c",
+    sources: ["m1"],
+    fingerprint: "f",
+    anchor: { side: "right", startLine: 1, endLine: 1, startOffset: 1, endOffset: 5 },
+    ...over,
+  });
+  const empty = { merged: [], degraded: [], rawCount: 0, byFailure: {} };
+
+  const single = finalize(empty, [mk({ sources: ["m1"] })]);
+  eq("單一模型且未驗證 → 不發 inline", single.inline.length, 0);
+  eq("但仍列於 summary", single.belowBar.length, 1);
+  eq("並標明原因", single.belowBar[0]?.suppressedBy, "no-corroboration");
+
+  const twoModels = finalize(empty, [mk({ sources: ["m1", "m2"] })]);
+  eq("兩個模型獨立發現 → 發 inline", twoModels.inline.length, 1);
+
+  const verified = finalize(empty, [mk({ sources: ["m1"], skepticVerdicts: 1 })]);
+  eq("單一模型但通過對抗驗證 → 發 inline", verified.inline.length, 1);
+
+  const lowSev = finalize(empty, [mk({ sources: ["m1", "m2"], severity: "low" })]);
+  eq("低於門檻 → 不發 inline", lowSev.inline.length, 0);
+  eq("原因標為 severity", lowSev.belowBar[0]?.suppressedBy, "severity");
 }
 
 console.log(`\n結果：${passed} 通過、${failed} 失敗`);

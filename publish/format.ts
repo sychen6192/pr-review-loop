@@ -27,6 +27,14 @@ const CATEGORY_LABEL: Record<string, string> = {
   "req-mismatch": "📋 需求未滿足",
 };
 
+// Why a finding never became an inline comment. Stated explicitly so a suppressed finding
+// never reads as "nothing else was found".
+const SUPPRESSED_LABEL: Record<string, string> = {
+  severity: `低於 ${MIN_INLINE_SEVERITY} 留言門檻`,
+  cap: `超過每次 ${MAX_INLINE_COMMENTS} 則上限`,
+  "no-corroboration": "只有單一模型提出且未經驗證，缺乏佐證",
+};
+
 const FAILURE_LABEL: Record<string, string> = {
   "quote-not-found": "引用的程式碼在檔案中找不到",
   "quote-ambiguous": "引用的程式碼出現多次，無法確定位置",
@@ -50,8 +58,16 @@ export function renderFindingComment(f: AnchoredFinding): string {
     parts.push("", "**建議修正**", "", "```", f.suggested_fix.trim(), "```");
   }
   const conf = Math.round(f.confidence * 100);
-  const src = f.sources.length > 1 ? `${f.sources.length} 個模型獨立發現` : f.sources[0] ?? "";
-  parts.push("", `<sub>信心 ${conf}%｜${src}</sub>`);
+  const bits: string[] = [`信心 ${conf}%`];
+  bits.push(f.sources.length > 1 ? `${f.sources.length} 個模型獨立發現` : f.sources[0] ?? "");
+  if (f.skepticVerdicts) {
+    bits.push(
+      f.skepticRefuted
+        ? `對抗驗證 ${f.skepticVerdicts} 輪（${f.skepticRefuted} 輪持保留意見）`
+        : `已通過 ${f.skepticVerdicts} 輪對抗驗證`,
+    );
+  }
+  parts.push("", `<sub>${bits.filter(Boolean).join("｜")}</sub>`);
   return parts.join("\n");
 }
 
@@ -170,15 +186,10 @@ export function renderSummary(input: SummaryInput): string {
   }
 
   if (agg.belowBar.length > 0) {
-    lines.push(
-      detailsOpen(
-        `未留言的其他 findings（${agg.belowBar.length}）—— 低於 ${MIN_INLINE_SEVERITY} 門檻或超過每次 ${MAX_INLINE_COMMENTS} 則上限`,
-      ),
-      "",
-    );
+    lines.push(detailsOpen(`未留言的其他 findings（${agg.belowBar.length}）`), "");
     for (const f of agg.belowBar) {
       const loc = f.anchor ? `${f.file}:${f.anchor.startLine}` : f.file;
-      lines.push(`- **${f.severity}** \`${loc}\` — ${f.claim}`);
+      lines.push(`- **${f.severity}** \`${loc}\` — ${f.claim}`, `  <sub>${SUPPRESSED_LABEL[f.suppressedBy ?? ""] ?? "未達回報門檻"}</sub>`);
     }
     lines.push("", "</details>", "");
   }
@@ -211,8 +222,10 @@ export function renderSummary(input: SummaryInput): string {
     notes.push(`模型 ${e.model} 本次未產出結果：${e.error}`);
   }
   if (agg.stats.raw > 0) {
+    const killed = agg.stats.anchored - agg.stats.survived;
     notes.push(
-      `原始 findings ${agg.stats.raw} → 去重 ${agg.stats.afterDedupe} → 成功定位 ${agg.stats.anchored}`,
+      `原始 findings ${agg.stats.raw} → 去重 ${agg.stats.afterDedupe} → 成功定位 ${agg.stats.anchored}` +
+        (killed > 0 ? ` → 對抗驗證推翻 ${killed} 筆，存活 ${agg.stats.survived}` : ""),
     );
   }
   if (notes.length > 0) {

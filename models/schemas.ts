@@ -84,3 +84,20 @@ export const REQUIREMENT_SCHEMA = {
     },
   },
 } as const;
+
+// Skeptic verdict. Deliberately small: a refutation that needs a long JSON object is
+// usually a refutation the model is inventing.
+export const VERDICT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["refuted", "reason", "confidence"],
+  properties: {
+    refuted: {
+      type: "boolean",
+      description: "true only when you can state concretely why the finding is wrong.",
+    },
+    reason: { type: "string" },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    suggested_severity: { type: "string", enum: [...SEVERITIES] },
+  },
+} as const;

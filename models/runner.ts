@@ -8,6 +8,7 @@ import {
   LLM_STRUCTURED_OUTPUT,
   LLM_TEMPERATURE,
   LLM_TIMEOUT_MS,
+  RUNNER_KIND,
 } from "../config";
 import { logVerbose } from "../libs/log";
 import type { ChatRequest, ChatResponse, ModelRunner } from "../libs/types";
@@ -96,6 +97,14 @@ export class OpenAICompatRunner implements ModelRunner {
   }
 }
 
-export function createRunner(): ModelRunner {
+/**
+ * Runner factory. The opencode path is imported lazily so a missing opencode install never
+ * affects the default HTTP path (and vice versa).
+ */
+export async function createRunner(): Promise<ModelRunner> {
+  if (RUNNER_KIND === "opencode") {
+    const { OpencodeRunner } = await import("./opencode");
+    return new OpencodeRunner();
+  }
   return new OpenAICompatRunner();
 }

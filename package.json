@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "selftest": "tsx scripts/selftest.ts",
     "check": "tsc --noEmit && tsx scripts/selftest.ts",
-    "doctor": "tsx scripts/doctor.ts"
+    "doctor": "tsx scripts/doctor.ts",
+    "setup": "tsx scripts/setup.ts",
+    "demo": "tsx scripts/demo.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

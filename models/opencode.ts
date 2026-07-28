@@ -147,8 +147,8 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
 export class OpencodeRunner implements ModelRunner {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     // opencode has no separate system-message channel here; the role contract lives in the
-    // agent .md and everything task-specific is injected into the prompt (the
-    // \"injection over discovery\" principle: a loop cannot depend on probabilistic skill loading).
+    // agent .md and everything task-specific is injected into the prompt — "injection over
+    // discovery", because a loop cannot depend on probabilistic skill loading.
     const prompt = `${req.system}\n\n---\n\n${inlineSchema(req)}`;
     const label = req.schemaName ?? "opencode";
     return runOnce(label, req.model, prompt);

@@ -1,7 +1,8 @@
 # prloop — 多模型對抗式 PR Review Pipeline 提案
 
-> 2026-07-28 草案 v1。基於三方調查:GitHub 最熱門 PR review 專案架構、2026 業界最佳實務、
-> Azure DevOps REST API 機制;並繼承一個已在正式環境驗證過的 loop engineering 工具的設計哲學（以下稱「前作」）。
+> 草案 v1。基於三方調查:GitHub 最熱門 PR review 專案架構、2026 業界最佳實務、
+> Azure DevOps REST API 機制;並繼承一個已在正式環境驗證過的 loop engineering 工具的設計哲學
+> (以下稱「前作」——一個同樣走確定性 orchestrator 的單元測試產生 pipeline)。
 
 ## 1. 定位
 
@@ -51,7 +52,7 @@ intake ────── ADO REST:PR 資訊、iterations、上次已審 iterati
         │     左右 blob 原始 bytes、連結 Work Items(含 acceptance criteria)
         │     → 本地產生 unified diff + 行號索引(SSOT,之後所有階段共用)
         ▼
-orchestrator.ts ←── 唯一 loop controller(確定性,繼承 前作)
+orchestrator.ts ←── 唯一 loop controller(確定性,繼承前作)
         │
         │  A) Requirement Gate(LLM):acceptance criteria 逐條 × diff → 覆蓋矩陣
         │  B) Deterministic Gates(script):per-language profile 跑
@@ -126,12 +127,12 @@ state ─────── runs/<org>/<repo>/<PR>/iter-N/ 全 artifacts 落盤;
 | Triage(選配) | Qwen3-30B-A3B 等便宜快模型 | 大 PR 先分類 hunk 風險、壓縮輸入 |
 
 單卡部署的現實(前作已踩過):多模型不必同時常駐——pipeline 是批次的,
-Finder 全跑完 → 卸載 → 載 Skeptic,階段間換模可接受;或 27B(Q4)+ 20B 級各一常駐;
+Finder 全跑完 → 卸載 → 載 Skeptic,階段間換模可接受;VRAM 若足夠也可 27B(Q4)+ 20B 級各一常駐;
 多台機器時 LiteLLM 直接 fan-out。Runner adapter 讓這些部署差異不進核心。
 
 ### 5.3 語言別 evaluation criteria:分層 + profile 化
 
-不要試圖為每個語言寫一份大 rubric 讓 LLM 打分(前作 已證明弱模型 follow 長 rubric
+不要試圖為每個語言寫一份大 rubric 讓 LLM 打分(前作已證明弱模型 follow 長 rubric
 不穩)。改為三層,每層責任不同:
 
 1. **事實層(零 LLM)**:`tsc --noEmit`、error-prone、mypy 的輸出是事實,直接當 gate
@@ -192,7 +193,7 @@ profile,不動核心。
 
 ### 7.1 為什麼不用前作的評分制
 
-前作 審的是「一個測試檔的整體品質」,六維加權打分有意義。PR review 審的是「一組具體
+前作審的是「一個測試檔的整體品質」,六維加權打分有意義。PR review 審的是「一組具體
 缺陷」,「這個 PR 可讀性 7 分」給不了 reviewer 任何行動指引。所以 prloop 用
 **分類 + 嚴重度 + 信心**,不是評分。這也和業界一致:調查過的商用工具沒有一個對 PR 打總分,
 唯一的例外是 PR-Agent 的 `score` 0-100,而它是報告用途、不影響任何決策。
@@ -227,7 +228,7 @@ Bugzilla / Mozilla / Atlassian / Microsoft 四套 severity 定義共同的五個
 
 ### 7.4 規則層(M4):evaluation criteria by language 的解法
 
-不要寫一份大 rubric 讓模型記住所有語言的規則(前作 已證實弱模型 follow 長 rubric
+不要寫一份大 rubric 讓模型記住所有語言的規則(前作已證實弱模型 follow 長 rubric
 不穩)。改為**按 glob 掛載、只注入相關規則**:
 
 ```
@@ -353,7 +354,7 @@ pr-review-loop/
 - **預建 embeddings 索引(RAG)**:每 commit 就過期,similarity 撈到「長得像」而非
   「結構相依」的程式碼(CodeRabbit 明確棄用)。context 走 diff + 一跳依賴(tree-sitter
   /LSP),之後有需求再評估混合檢索。
-- **LLM orchestrator / agent 自主決定重試**:前作 已否決,理由不變。
+- **LLM orchestrator / agent 自主決定重試**:前作已否決,理由不變。
 - **binary 零缺陷 review gate**:LLM judge 幾乎不回空 issues,會震盪;
   改為 findings 分層 + 門檻制。
 - **bot vote -10 擋 merge**:粗暴且與 policy 打架;用 PR Status + branch policy。

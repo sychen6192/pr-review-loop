@@ -6,6 +6,7 @@ import {
   AZ_BIN,
   FINDER_MODELS,
   LLM_BASE_URL,
+  LLM_CONCURRENCY,
   MAX_INLINE_COMMENTS,
   ADO_API_VERSION,
   MIN_INLINE_SEVERITY,
@@ -125,6 +126,16 @@ async function main() {
         "a same-family verifier shares the finder's blind spots and confirms exactly the bugs you most need caught. Use a different family",
       );
     }
+  }
+  ok("Model call concurrency", LLM_CONCURRENCY > 0 ? `${LLM_CONCURRENCY} in flight` : "unlimited");
+  if (LLM_CONCURRENCY <= 0 || LLM_CONCURRENCY > 16) {
+    warn(
+      `PRR_LLM_CONCURRENCY=${LLM_CONCURRENCY || "unlimited"}`,
+      "the skeptic issues one call per anchored finding per round, all at once. Against a " +
+        "self-hosted endpoint they queue while their own timeouts run down, and a skeptic " +
+        "timeout fails open — verification silently becomes a no-op. Keep it near the " +
+        "endpoint's real batch size",
+    );
   }
   if (!REQUIRE_CORROBORATION) {
     warn("Corroboration requirement off (PRR_REQUIRE_CORROBORATION=0)", "unverified single-model findings get posted directly; expect more false positives");

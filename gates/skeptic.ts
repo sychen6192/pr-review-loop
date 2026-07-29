@@ -5,7 +5,13 @@
 // Findings are verified in parallel; a skeptic that fails to answer leaves its finding
 // alive (fail-open here, because a dead verifier must not silently delete real bugs — the
 // consensus rule downstream still requires corroboration before publishing).
-import { SKEPTIC_MODELS, SKEPTIC_ROUNDS, SKEPTIC_CONTEXT_LINES, severityRank } from "../config";
+import {
+  SKEPTIC_CONTEXT_LINES,
+  SKEPTIC_MODELS,
+  SKEPTIC_ROUNDS,
+  SKEPTIC_TIMEOUT_MS,
+  severityRank,
+} from "../config";
 import { parseJsonObject } from "../libs/json";
 import { log, logVerbose } from "../libs/log";
 import { SEVERITIES, type Severity } from "../config";
@@ -72,6 +78,7 @@ async function verifyOne(
     schema: VERDICT_SCHEMA,
     schemaName: "verdict",
     maxTokens: 2048,
+    timeoutMs: SKEPTIC_TIMEOUT_MS,
   });
   if (res.error) {
     logVerbose(`skeptic ${model} call failed: ${res.error}`);

@@ -7,9 +7,11 @@ import {
   LLM_MAX_TOKENS,
   LLM_STRUCTURED_OUTPUT,
   LLM_TEMPERATURE,
+  LLM_CONCURRENCY,
   LLM_TIMEOUT_MS,
   RUNNER_KIND,
 } from "../config";
+import { Semaphore } from "../libs/limit";
 import { logVerbose } from "../libs/log";
 import { USER_AGENT, dispatcherFor } from "../libs/proxy";
 import type { ChatRequest, ChatResponse, ModelRunner } from "../libs/types";
@@ -50,7 +52,10 @@ export class OpenAICompatRunner implements ModelRunner {
 
     const url = `${this.baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), LLM_TIMEOUT_MS);
+    const timeoutMs = req.timeoutMs ?? LLM_TIMEOUT_MS;
+    // Started here, after the concurrency slot was acquired: time spent queued behind other
+    // calls must not count against this request's own deadline.
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     const started = Date.now();
     try {
       const res = await fetch(url, {
@@ -93,7 +98,7 @@ export class OpenAICompatRunner implements ModelRunner {
       };
     } catch (e) {
       const msg = e instanceof Error && e.name === "AbortError"
-        ? `timeout (${Math.round(LLM_TIMEOUT_MS / 1000)}s)`
+        ? `timeout (${Math.round(timeoutMs / 1000)}s)`
         : String(e);
       return { text: "", model: req.model, error: msg };
     } finally {
@@ -103,13 +108,33 @@ export class OpenAICompatRunner implements ModelRunner {
 }
 
 /**
+ * Caps concurrent calls across every stage at once.
+ *
+ * Applied here rather than at each call site so a single pool covers finders, the
+ * requirement axis, the skeptic and triage — the stages overlap, and per-stage limits would
+ * still let their sum swamp the endpoint.
+ */
+function throttled(inner: ModelRunner, limit: number): ModelRunner {
+  if (limit <= 0) return inner;
+  const sem = new Semaphore(limit);
+  return {
+    chat(req) {
+      if (sem.inFlight >= limit) {
+        logVerbose(`model calls at the ${limit} limit, queueing ${req.model} (${sem.waiting + 1} waiting)`);
+      }
+      return sem.run(() => inner.chat(req));
+    },
+  };
+}
+
+/**
  * Runner factory. The opencode path is imported lazily so a missing opencode install never
  * affects the default HTTP path (and vice versa).
  */
 export async function createRunner(): Promise<ModelRunner> {
-  if (RUNNER_KIND === "opencode") {
-    const { OpencodeRunner } = await import("./opencode");
-    return new OpencodeRunner();
-  }
-  return new OpenAICompatRunner();
+  const inner =
+    RUNNER_KIND === "opencode"
+      ? new (await import("./opencode")).OpencodeRunner()
+      : new OpenAICompatRunner();
+  return throttled(inner, LLM_CONCURRENCY);
 }

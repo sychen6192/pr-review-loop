@@ -21,6 +21,7 @@ import type { ToolSpec } from "../profiles/types";
 import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 import { load, sourcePaths } from "../libs/tls";
+import { Semaphore } from "../libs/limit";
 import { PRLOOP_ROOT } from "../config";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -790,6 +791,42 @@ section("dispatcher carries the CA on every path");
     check("CA is applied to NO_PROXY hosts too", out.value.bypassed === true);
   }
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+section("model call concurrency cap");
+{
+  const sem = new Semaphore(3);
+  let peak = 0;
+  let running = 0;
+  const task = () =>
+    sem.run(async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 5));
+      running--;
+    });
+  await Promise.all(Array.from({ length: 20 }, task));
+  eq("never exceeds the limit", peak, 3);
+  eq("every slot is returned", sem.inFlight, 0);
+  eq("nothing left queued", sem.waiting, 0);
+
+  // A stage that throws must not leak its slot, or a few failures deadlock the whole run.
+  const s2 = new Semaphore(1);
+  await Promise.allSettled([
+    s2.run(async () => {
+      throw new Error("boom");
+    }),
+  ]);
+  eq("a throwing call releases its slot", s2.inFlight, 0);
+  let ran = false;
+  await s2.run(async () => {
+    ran = true;
+  });
+  check("the semaphore still works after a throw", ran);
+
+  // 0 disables the cap rather than blocking forever.
+  const s3 = new Semaphore(0);
+  eq("limit 0 means unlimited", await s3.run(async () => 42), 42);
 }
 
 console.log(`\nResult: ${passed} passed, ${failed} failed`);

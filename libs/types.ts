@@ -193,6 +193,9 @@ export interface ChatRequest {
   schemaName?: string;
   temperature?: number;
   maxTokens?: number;
+  // Per-call timeout. Defaults to PRR_LLM_TIMEOUT_MS; the skeptic overrides it because
+  // verifying one finding against 25 lines is nothing like reading a whole diff.
+  timeoutMs?: number;
 }
 
 export interface ChatResponse {

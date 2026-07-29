@@ -256,8 +256,21 @@ npx tsx scripts/probe.ts '<PR URL>'
   `https://tfs.corp.com/tfs/{collection}`（含虛擬目錄）。若仍不對，用 `PRR_ADO_BASE_URL` 覆蓋。
 - **on-prem 出現 api-version 不支援。** 各版本上限不同：Server 2019 → `5.0`、
   2020 → `6.0`、2022 → `7.0`、雲端 → `7.1`。設 `PRR_ADO_API_VERSION` 調整。
-- **TLS 憑證錯誤（內部 CA）。** `export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem` 後重跑。
-  錯誤訊息會直接告訴你這件事，不用猜。
+- **TLS 憑證錯誤（企業 TLS 攔截）。** 瀏覽器能開但工具連不上，幾乎都是這個。
+  **Node 有自己內建的 CA 清單，不讀作業系統的信任存放區**——所以公司的攔截設備
+  （Zscaler、Blue Coat 等）重簽的憑證，瀏覽器接受、Node 不接受。
+
+  `npx tsx scripts/probe.ts '<PR URL>'` 的「TLS 握手」那一節會把伺服器實際出示的
+  憑證鏈印出來。若最末端的簽發者不是公開 CA（Microsoft、DigiCert 之類），就確定是攔截。
+
+  解法是把該 CA 指給 Node：
+  ```bash
+  export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem
+  ```
+  憑證檔向 IT 索取，或自行匯出（probe 會印出完整指令）。
+
+  確認用途可以暫時 `NODE_TLS_REJECT_UNAUTHORIZED=0`，但**不要留著**——那會關閉所有
+  憑證驗證，等於接受任何中間人。確認完立刻改回 `NODE_EXTRA_CA_CERTS`。
 - **203 / 登入頁錯誤。** PAT 無效或缺少 scope（需要 Code Read & Write）。若走 az CLI，
   多半是 `az login` 過期或登入到錯的 tenant，重跑 `az login` 即可。
 - **az 相關錯誤。** `doctor` 會顯示目前的認證模式與 az 登入身分。要強制走某一種認證，

@@ -5,6 +5,7 @@
 // doctor tells you whether things work. probe tells you why they don't.
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as tls from "node:tls";
 import { ADO_API_VERSION, ADO_PAT, PRLOOP_ROOT } from "../config";
 import { authHeader, describeAuthMode } from "../ado/auth";
 import { parsePrUrl, prBase, repoBase } from "../ado/client";
@@ -98,6 +99,102 @@ async function rawGet(url: string, header: string): Promise<void> {
   }
 }
 
+/**
+ * TLS handshake, probed separately from HTTP.
+ *
+ * Node ships its own CA bundle and does NOT consult the operating system trust store, so a
+ * corporate TLS-interception proxy that every browser accepts will still fail here. The
+ * second connection (verification disabled) exists purely to read back the certificate the
+ * server actually presented, which names the interceptor — that is the piece of information
+ * that turns "handshake failed" into "install this CA".
+ */
+async function probeTls(host: string, port: number): Promise<void> {
+  console.log("\n=== 4. TLS 握手 ===");
+
+  const connect = (rejectUnauthorized: boolean) =>
+    new Promise<{ ok: boolean; err?: string; code?: string; chain: string[]; issuer: string }>((resolve) => {
+      const socket = tls.connect(
+        { host, port, servername: host, rejectUnauthorized, timeout: 15_000 },
+        () => {
+          const cert = socket.getPeerCertificate(true) as tls.DetailedPeerCertificate | undefined;
+          const chain: string[] = [];
+          let node = cert;
+          const seen = new Set<string>();
+          while (node && node.subject) {
+            const asText = (v: unknown): string =>
+              Array.isArray(v) ? v.join(", ") : typeof v === "string" ? v : "";
+            const cn = asText(node.subject.CN) || asText(node.subject.O) || "(無 CN)";
+            const iss = asText(node.issuer?.CN) || asText(node.issuer?.O) || "?";
+            const key = `${cn}|${iss}`;
+            if (seen.has(key)) break;
+            seen.add(key);
+            chain.push(`${cn}   ← 簽發者：${iss}`);
+            node = node.issuerCertificate === node ? undefined : node.issuerCertificate;
+          }
+          // Subject/issuer fields can come back as arrays when a DN repeats an attribute.
+          const flat = (v: string | string[] | undefined): string =>
+            Array.isArray(v) ? v.join(", ") : (v ?? "");
+          const issuer = flat(cert?.issuer?.CN) || flat(cert?.issuer?.O);
+          socket.end();
+          resolve({ ok: true, chain, issuer });
+        },
+      );
+      socket.on("error", (e: NodeJS.ErrnoException) => {
+        resolve({ ok: false, err: e.message, code: e.code, chain: [], issuer: "" });
+      });
+      socket.on("timeout", () => {
+        socket.destroy();
+        resolve({ ok: false, err: "TLS 握手逾時（15s）", chain: [], issuer: "" });
+      });
+    });
+
+  line("目標", `${host}:${port}`);
+  const strict = await connect(true);
+
+  if (strict.ok) {
+    line("憑證驗證", "✅ 通過");
+    for (const c of strict.chain) console.log(`     ${c}`);
+    console.log("  → TLS 沒問題，失敗原因在別處。");
+    return;
+  }
+
+  line("憑證驗證", `❌ 失敗：${strict.err}${strict.code ? `（${strict.code}）` : ""}`);
+
+  // Read the presented certificate anyway; its issuer identifies the interceptor.
+  const loose = await connect(false);
+  if (!loose.ok) {
+    console.log(`  連 TCP/TLS 都建立不起來：${loose.err}`);
+    console.log("  → 這不是憑證問題，是網路不通。檢查 VPN、防火牆，或是否需要 HTTPS_PROXY。");
+    return;
+  }
+
+  console.log("  伺服器實際出示的憑證鏈：");
+  for (const c of loose.chain) console.log(`     ${c}`);
+
+  const rootIssuer = loose.chain.length ? loose.chain[loose.chain.length - 1] : "";
+  console.log("");
+  if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(strict.code ?? strict.err ?? "")) {
+    console.log("  → 憑證由 Node 不信任的 CA 簽發。上面鏈結最末端那個簽發者就是攔截你的 CA。");
+    console.log("     若那不是公開 CA（Microsoft / DigiCert 之類），代表公司有 TLS 攔截設備。");
+    console.log("");
+    console.log("  解法：把該 CA 的憑證檔指給 Node（Node 不讀作業系統的信任存放區）");
+    console.log("     export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem");
+    console.log("");
+    console.log("  取得憑證檔的方式（擇一）：");
+    console.log("     • 向 IT 索取公司根 CA 的 .pem / .crt");
+    console.log(
+      `     • 自行匯出：openssl s_client -showcerts -servername ${host} -connect ${host}:${port} </dev/null \\`,
+    );
+    console.log("         | openssl x509 -outform PEM > corporate-ca.pem   （取鏈結最後一張）");
+    console.log("     • Linux 上常見位置：/etc/ssl/certs/ca-certificates.crt");
+    console.log("");
+    console.log(`  僅供確認用（不要留著）：NODE_TLS_REJECT_UNAUTHORIZED=0 npx tsx scripts/probe.ts '<PR URL>'`);
+    console.log("     若這樣就通了，就百分之百確定是憑證問題。但它會關閉所有憑證驗證，");
+    console.log("     等於接受任何中間人，確認完請立刻改用 NODE_EXTRA_CA_CERTS。");
+  }
+  void rootIssuer;
+}
+
 async function main() {
   const url = process.argv[2];
   if (!url) {
@@ -150,10 +247,12 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("\n=== 4. 用目前設定實際請求一次 ===");
+  await probeTls(new URL(ref.baseUrl).hostname, Number(new URL(ref.baseUrl).port || 443));
+
+  console.log("\n=== 5. 用目前設定實際請求一次 ===");
   await rawGet(`${prBase(ref)}?api-version=${ADO_API_VERSION}`, header);
 
-  console.log("\n=== 5. 逐一測試各 api-version，找出這台伺服器接受哪個 ===");
+  console.log("\n=== 6. 逐一測試各 api-version，找出這台伺服器接受哪個 ===");
   const working: string[] = [];
   for (const v of CANDIDATE_VERSIONS) {
     try {

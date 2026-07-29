@@ -11,7 +11,7 @@ import {
   RUNNER_KIND,
 } from "../config";
 import { logVerbose } from "../libs/log";
-import { dispatcherFor } from "../libs/proxy";
+import { USER_AGENT, dispatcherFor } from "../libs/proxy";
 import type { ChatRequest, ChatResponse, ModelRunner } from "../libs/types";
 
 interface OpenAIChoice {
@@ -58,6 +58,7 @@ export class OpenAICompatRunner implements ModelRunner {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
+          "User-Agent": USER_AGENT,
         },
         body: JSON.stringify(body),
         signal: ctrl.signal,

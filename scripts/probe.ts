@@ -10,7 +10,7 @@ import * as tls from "node:tls";
 import { ADO_API_VERSION, ADO_PAT, PRLOOP_ROOT } from "../config";
 import { authHeader, describeAuthMode } from "../ado/auth";
 import { parsePrUrl, prBase } from "../ado/client";
-import { HTTPS_PROXY, HTTP_PROXY, bypassesProxy, proxySummary, redactProxy } from "../libs/proxy";
+import { HTTPS_PROXY, HTTP_PROXY, USER_AGENT, bypassesProxy, proxySummary, redactProxy } from "../libs/proxy";
 import { commandExists, run } from "../libs/shell";
 import { AZ_BIN } from "../config";
 
@@ -186,7 +186,12 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
         const auth = pu.username
           ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password)}`).toString("base64")}\r\n`
           : "";
-        s.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n${auth}\r\n`);
+        s.write(
+          `CONNECT ${host}:${port} HTTP/1.1\r\n` +
+            `Host: ${host}:${port}\r\n` +
+            `User-Agent: ${USER_AGENT}\r\n` +
+            `Proxy-Connection: Keep-Alive\r\n${auth}\r\n`,
+        );
         s.once("data", (buf: Buffer) => {
           const head = buf.toString("utf8").split("\r\n")[0] ?? "";
           if (/ 200 /.test(head)) resolve({ sock: s });
@@ -198,8 +203,9 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
             let why = "";
             if (code === "403") {
               why =
-                "proxy 政策不允許連往這個主機。這與憑證、PAT 都無關——" +
-                "proxy 在任何憑證或 token 交換之前就擋掉了";
+                `proxy 拒絕放行（目前送出的 User-Agent 是「${USER_AGENT}」）。` +
+                "若 git 對同一主機是通的，多半是 proxy 依 User-Agent 過濾，" +
+                "用 PRR_USER_AGENT 換成 git 或瀏覽器的字串試試";
             } else if (code === "407") {
               why = "proxy 要求認證。改用 http://使用者:密碼@主機:埠 的形式設定 HTTPS_PROXY";
             } else if (code === "502" || code === "504") {
@@ -428,6 +434,7 @@ async function main() {
   ]);
   line("生效的 api-version", ADO_API_VERSION);
   line("proxy 設定", proxySummary());
+  line("User-Agent", USER_AGENT);
   if (!HTTPS_PROXY && !HTTP_PROXY) {
     console.log("  （若公司網路只能透過 proxy 對外，未設這個變數會直接連線失敗）");
   }

@@ -39,7 +39,7 @@ function reportProvenance(keys: string[]) {
       fileValues.set(s.slice(0, i).trim(), s.slice(i + 1).trim());
     }
   } else {
-    console.log(`  （找不到 ${envPath}）`);
+    console.log(`  (${envPath} not found)`);
   }
 
   for (const k of keys) {
@@ -47,15 +47,15 @@ function reportProvenance(keys: string[]) {
     const effective = process.env[k];
     const shown = k.includes("PAT") || k.includes("KEY")
       ? effective
-        ? `（已設定，長度 ${effective.length}）`
-        : "（未設定）"
-      : (effective ?? "（未設定）");
+        ? `(set, length ${effective.length})`
+        : "(not set)"
+      : (effective ?? "(not set)");
 
-    let source = "預設值";
+    let source = "default";
     if (inFile !== undefined && effective === inFile) source = ".env";
-    else if (effective !== undefined && inFile === undefined) source = "shell 環境變數";
+    else if (effective !== undefined && inFile === undefined) source = "shell env var";
     else if (inFile !== undefined && effective !== inFile) {
-      source = `⚠️  shell 環境變數覆蓋了 .env（.env 寫的是「${inFile}」，實際生效的是「${effective ?? ""}」）`;
+      source = `⚠️  shell env var overrides .env (.env says "${inFile}", effective value is "${effective ?? ""}")`;
     }
     line(k, `${shown}   ← ${source}`);
   }
@@ -73,14 +73,14 @@ async function rawGet(url: string, header: string): Promise<void> {
     } as RequestInit);
     const ms = Date.now() - started;
     const ctype = res.headers.get("content-type") ?? "";
-    line("HTTP 狀態", `${res.status} ${res.statusText}   (${ms}ms)`);
+    line("HTTP status", `${res.status} ${res.statusText}   (${ms}ms)`);
     line("content-type", ctype);
 
     const body = await res.text();
     if (res.status === 203 || ctype.includes("text/html")) {
       console.log(
-        "  → 收到登入頁而非 JSON。這代表認證沒有被接受：PAT 無效、已過期、" +
-          "或缺少 Code (Read & Write) scope。",
+        "  → Got a sign-in page, not JSON. Auth was rejected: PAT invalid, expired, " +
+          "or missing the Code (Read & Write) scope.",
       );
       return;
     }
@@ -89,20 +89,20 @@ async function rawGet(url: string, header: string): Promise<void> {
     try {
       const j = JSON.parse(body) as Record<string, unknown>;
       if (typeof j["message"] === "string") {
-        console.log(`  伺服器訊息：${j["message"]}`);
+        console.log(`  server message: ${j["message"]}`);
       } else if (typeof j["title"] === "string") {
-        console.log(`  ${String(j["title"])}｜狀態 ${String(j["status"] ?? "")}`);
+        console.log(`  ${String(j["title"])} | status ${String(j["status"] ?? "")}`);
       } else {
         const keys = Object.keys(j).slice(0, 8).join(", ");
-        console.log(`  回應 JSON 欄位：${keys}`);
+        console.log(`  response JSON fields: ${keys}`);
       }
     } catch {
-      console.log(`  回應前 300 字元：${body.slice(0, 300)}`);
+      console.log(`  first 300 chars of response: ${body.slice(0, 300)}`);
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const code = (e as { cause?: { code?: string } })?.cause?.code ?? "";
-    line("連線失敗", `${msg}${code ? `（${code}）` : ""}`);
+    line("connection failed", `${msg}${code ? ` (${code})` : ""}`);
   }
 }
 
@@ -133,14 +133,14 @@ function systemCaAdvice(): string {
   const [maj = 0, min = 0] = process.versions.node.split(".").map(Number);
   const hasFlag = maj > 23 || (maj === 23 && min >= 5) || (maj === 22 && min >= 15);
   if (!hasFlag) {
-    return `此版本沒有 --use-system-ca（需 22.15+ / 23.5+），請改用 NODE_EXTRA_CA_CERTS`;
+    return `this Node has no --use-system-ca (needs 22.15+ / 23.5+); use NODE_EXTRA_CA_CERTS instead`;
   }
   if (maj >= 24) {
-    return `export NODE_OPTIONS=--use-system-ca   然後照常執行（Node 24 起允許放在 NODE_OPTIONS）`;
+    return `export NODE_OPTIONS=--use-system-ca   then run as usual (Node 24+ allows it in NODE_OPTIONS)`;
   }
   return (
-    "node --use-system-ca ...（此版本不允許放進 NODE_OPTIONS，" +
-    "搭配 npx/tsx 不好用，建議改用 NODE_EXTRA_CA_CERTS）"
+    "node --use-system-ca ... (this version rejects it in NODE_OPTIONS, " +
+    "so it's awkward with npx/tsx; prefer NODE_EXTRA_CA_CERTS)"
   );
 }
 
@@ -151,13 +151,13 @@ function derToPem(der: Buffer): string {
 }
 
 async function probeTls(host: string, port: number, exportCaTo?: string): Promise<void> {
-  console.log("\n=== 4. TLS 握手 ===");
+  console.log("\n=== 4. TLS handshake ===");
 
   const proxy = bypassesProxy(host) ? "" : HTTPS_PROXY || HTTP_PROXY;
   if (proxy) {
-    line("經由 proxy", redactProxy(proxy));
+    line("via proxy", redactProxy(proxy));
   } else {
-    line("連線方式", "直接連線（未設 proxy，或此主機在 NO_PROXY 中）");
+    line("connection", "direct (no proxy set, or host is in NO_PROXY)");
   }
 
   // With a proxy in play the handshake has to run inside a CONNECT tunnel; testing a direct
@@ -170,7 +170,7 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
         s.once("error", (e: NodeJS.ErrnoException) => resolve({ err: e.message, code: e.code }));
         s.once("timeout", () => {
           s.destroy();
-          resolve({ err: "TCP 連線逾時（15s）" });
+          resolve({ err: "TCP connect timeout (15s)" });
         });
         return;
       }
@@ -180,10 +180,10 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
         port: Number(pu.port || (pu.protocol === "https:" ? 443 : 80)),
         timeout: 15_000,
       });
-      s.once("error", (e: NodeJS.ErrnoException) => resolve({ err: `連不到 proxy：${e.message}`, code: e.code }));
+      s.once("error", (e: NodeJS.ErrnoException) => resolve({ err: `cannot reach proxy: ${e.message}`, code: e.code }));
       s.once("timeout", () => {
         s.destroy();
-        resolve({ err: "連 proxy 逾時（15s）" });
+        resolve({ err: "proxy connect timeout (15s)" });
       });
       s.once("connect", () => {
         const auth = pu.username
@@ -206,15 +206,15 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
             let why = "";
             if (code === "403") {
               why =
-                `proxy 拒絕放行（目前送出的 User-Agent 是「${USER_AGENT}」）。` +
-                "若 git 對同一主機是通的，多半是 proxy 依 User-Agent 過濾；" +
-                "第 4b 節會測出哪種字串會被放行，再自行決定是否以 PRR_USER_AGENT 配合";
+                `proxy refused (User-Agent sent was "${USER_AGENT}"). ` +
+                "If git reaches the same host, the proxy is likely filtering on User-Agent; " +
+                "section 4b finds which string gets through, then set PRR_USER_AGENT to match";
             } else if (code === "407") {
-              why = "proxy 要求認證。改用 http://使用者:密碼@主機:埠 的形式設定 HTTPS_PROXY";
+              why = "proxy requires auth. Set HTTPS_PROXY as http://user:pass@host:port";
             } else if (code === "502" || code === "504") {
-              why = "proxy 連不到目標主機";
+              why = "proxy cannot reach the target host";
             }
-            resolve({ err: `proxy 拒絕 CONNECT：${head}${why ? `\n     → ${why}` : ""}` });
+            resolve({ err: `proxy refused CONNECT: ${head}${why ? `\n     → ${why}` : ""}` });
           }
         });
       });
@@ -237,12 +237,12 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
           while (node && node.subject) {
             const asText = (v: unknown): string =>
               Array.isArray(v) ? v.join(", ") : typeof v === "string" ? v : "";
-            const cn = asText(node.subject.CN) || asText(node.subject.O) || "(無 CN)";
+            const cn = asText(node.subject.CN) || asText(node.subject.O) || "(no CN)";
             const iss = asText(node.issuer?.CN) || asText(node.issuer?.O) || "?";
             const key = `${cn}|${iss}`;
             if (seen.has(key)) break;
             seen.add(key);
-            chain.push(`${cn}   ← 簽發者：${iss}`);
+            chain.push(`${cn}   ← issuer: ${iss}`);
             if (node.raw) der.push(node.raw);
             node = node.issuerCertificate === node ? undefined : node.issuerCertificate;
           }
@@ -259,47 +259,48 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
       });
       socket.on("timeout", () => {
         socket.destroy();
-        resolve({ ok: false, err: "TLS 握手逾時（15s）", chain: [], issuer: "", der: [] });
+        resolve({ ok: false, err: "TLS handshake timeout (15s)", chain: [], issuer: "", der: [] });
       });
     });
   };
 
-  line("目標", `${host}:${port}`);
+  line("target", `${host}:${port}`);
   const strict = await connect(true);
 
   if (strict.ok) {
-    line("憑證驗證", "✅ 通過");
+    line("cert verification", "✅ passed");
     for (const c of strict.chain) console.log(`     ${c}`);
-    console.log("  → TLS 沒問題，失敗原因在別處。");
+    console.log("  → TLS is fine; the failure is elsewhere.");
     return;
   }
 
-  line("憑證驗證", `❌ 失敗：${strict.err}${strict.code ? `（${strict.code}）` : ""}`);
+  line("cert verification", `❌ failed: ${strict.err}${strict.code ? ` (${strict.code})` : ""}`);
 
   // Read the presented certificate anyway; its issuer identifies the interceptor.
   const loose = await connect(false);
   if (!loose.ok) {
-    console.log(`  連 TCP/TLS 都建立不起來：${loose.err}`);
+    console.log(`  Cannot establish TCP/TLS at all: ${loose.err}`);
     if (proxy) {
-      console.log("  → 已嘗試經由 proxy，仍連不上。");
+      console.log("  → Tried via proxy, still unreachable.");
       if (/403/.test(loose.err ?? "")) {
         console.log("");
-        console.log("  proxy 拒絕放行時，最有用的線索是「你的 git 是怎麼通的」——");
-        console.log("  既然能對 Azure Repos 推拉程式碼，就存在一條可用路由：");
-        console.log("     git config --global --get https.proxy    # 與 HTTPS_PROXY 不同就改用它");
-        console.log("     若 git 沒設 proxy 卻能通，代表該直連：");
+        console.log("  When the proxy refuses, the best clue is how your git gets through --");
+        console.log("  if you can push/pull from Azure Repos, a working route exists:");
+        console.log("     git config --global --get https.proxy    # differs from HTTPS_PROXY? use it");
+        console.log("     If git has no proxy but works, go direct:");
         console.log(`     export NO_PROXY=${host},localhost,127.0.0.1`);
       }
     } else {
       console.log(
-        "  → 這不是憑證問題，是網路不通。若這台機器只能透過公司 proxy 對外，" +
-          "請設定 HTTPS_PROXY（Node 內建 fetch 不會自己讀，prloop 會）。",
+        "  → Not a certificate problem, the network is unreachable. If this machine can only " +
+          "reach the internet through a corporate proxy, set HTTPS_PROXY (Node's built-in fetch " +
+          "ignores it, prloop does not).",
       );
     }
     return;
   }
 
-  console.log("  伺服器實際出示的憑證鏈：");
+  console.log("  Certificate chain the server actually presented:");
   for (const c of loose.chain) console.log(`     ${c}`);
 
   console.log("");
@@ -313,52 +314,52 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
   if (authorities.length > 0) {
     const target = exportCaTo ?? path.join(PRLOOP_ROOT, "corporate-ca.pem");
     fs.writeFileSync(target, authorities.map(derToPem).join(""));
-    console.log(`  已將上層授權憑證寫出到：${target}（${authorities.length} 張）`);
+    console.log(`  Wrote the issuing authorities to: ${target} (${authorities.length} certs)`);
     console.log("");
-    console.log("  接著這樣做：");
+    console.log("  Next:");
     console.log(`     export NODE_EXTRA_CA_CERTS=${target}`);
     console.log("");
-    console.log("  ⚠️ 這份是從連線當下取得的；正式使用建議改用 IT 提供的公司根 CA。");
+    console.log("  ⚠️ These came off this connection; for real use, get the corporate root CA from IT.");
     console.log("");
   } else if (loose.der.length > 0) {
-    const issuer = loose.chain[0]?.split("← 簽發者：")[1]?.trim() ?? "（未知）";
-    console.log(`  ⚠️ 對方只送出站台憑證，沒有附上簽發它的 CA，因此沒有可匯出的憑證。`);
-    console.log(`     簽發者是「${issuer}」——你需要的是「這一張 CA」，不是站台憑證本身。`);
-    console.log("     （把站台憑證當 CA 用，會在憑證輪替時失效，並掩蓋真正的問題。）");
+    const issuer = loose.chain[0]?.split("← issuer: ")[1]?.trim() ?? "(unknown)";
+    console.log(`  ⚠️ The server sent only its leaf certificate, not the CA that signed it, so there is nothing to export.`);
+    console.log(`     The issuer is "${issuer}" -- that CA is what you need, not the leaf.`);
+    console.log("     (Trusting the leaf breaks on rotation and hides the real problem.)");
     console.log("");
-    console.log(`  取得方式：${systemCaAdvice()}`);
-    console.log("     或向 IT 索取該 CA 的 .pem / .crt。");
+    console.log(`  How to get it: ${systemCaAdvice()}`);
+    console.log("     Or ask IT for that CA's .pem / .crt.");
     console.log("");
-    console.log("  想確認它是否已在系統信任存放區裡：");
+    console.log("  To check whether it is already in the system trust store:");
     console.log(`     awk '/BEGIN/{c=""} {c=c $0 RS} /END/{print c | "openssl x509 -noout -subject"; close("openssl x509 -noout -subject")}' \\`);
     console.log(`       /etc/ssl/certs/ca-certificates.crt | grep -i "${issuer.split(".")[0] || "corp"}"`);
     console.log("");
   }
   if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(strict.code ?? strict.err ?? "")) {
-    console.log("  → 憑證由 Node 不信任的 CA 簽發。上面鏈結最末端那個簽發者就是攔截你的 CA。");
-    console.log("     若那不是公開 CA（Microsoft / DigiCert 之類），代表公司有 TLS 攔截設備。");
+    console.log("  → Signed by a CA Node does not trust. The last issuer in the chain above is the CA intercepting you.");
+    console.log("     If it is not a public CA (Microsoft / DigiCert etc.), your company runs TLS interception.");
     console.log("");
-    console.log("  解法：把該 CA 的憑證檔指給 Node（Node 不讀作業系統的信任存放區）");
+    console.log("  Fix: point Node at that CA's cert file (Node ignores the OS trust store)");
     console.log("     export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem");
     console.log("");
-    console.log("  其他做法：");
-    console.log(`     • 使用系統信任存放區（你的 Node 是 v${process.versions.node}）：`);
+    console.log("  Alternatives:");
+    console.log(`     • Use the system trust store (your Node is v${process.versions.node}):`);
     console.log(`       ${systemCaAdvice()}`);
     for (const candidate of ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"]) {
       if (fs.existsSync(candidate)) {
-        console.log(`     • 系統憑證包存在，可先試：export NODE_EXTRA_CA_CERTS=${candidate}`);
+        console.log(`     • System CA bundle exists, try: export NODE_EXTRA_CA_CERTS=${candidate}`);
       }
     }
-    console.log("     • 向 IT 索取公司根 CA 的 .pem / .crt");
+    console.log("     • Ask IT for the corporate root CA as .pem / .crt");
     console.log(
-      `     • 自行匯出：openssl s_client -showcerts -servername ${host} -connect ${host}:${port} </dev/null \\`,
+      `     • Export it yourself: openssl s_client -showcerts -servername ${host} -connect ${host}:${port} </dev/null \\`,
     );
-    console.log("         | openssl x509 -outform PEM > corporate-ca.pem   （取鏈結最後一張）");
-    console.log("     • Linux 上常見位置：/etc/ssl/certs/ca-certificates.crt");
+    console.log("         | openssl x509 -outform PEM > corporate-ca.pem   (take the last cert in the chain)");
+    console.log("     • Common location on Linux: /etc/ssl/certs/ca-certificates.crt");
     console.log("");
-    console.log(`  僅供確認用（不要留著）：NODE_TLS_REJECT_UNAUTHORIZED=0 npx tsx scripts/probe.ts '<PR URL>'`);
-    console.log("     若這樣就通了，就百分之百確定是憑證問題。但它會關閉所有憑證驗證，");
-    console.log("     等於接受任何中間人，確認完請立刻改用 NODE_EXTRA_CA_CERTS。");
+    console.log(`  Confirmation only, never keep it: NODE_TLS_REJECT_UNAUTHORIZED=0 npx tsx scripts/probe.ts '<PR URL>'`);
+    console.log("     If that works, it is definitely the certificate. But it disables all cert");
+    console.log("     verification -- any man-in-the-middle is accepted. Switch to NODE_EXTRA_CA_CERTS right after.");
   }
 }
 
@@ -376,19 +377,19 @@ const ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798";
  * setup; both failing points at credentials, permissions or the network itself.
  */
 async function probeViaAz(url: string): Promise<void> {
-  console.log("\n=== 7. 用 az CLI 打同一支 API（對照組）===");
+  console.log("\n=== 7. Same API via az CLI (control group) ===");
 
   if (!(await commandExists(AZ_BIN))) {
-    line("az CLI", "未安裝，略過此對照");
+    line("az CLI", "not installed, skipping");
     return;
   }
   const acct = await run(AZ_BIN, ["account", "show", "--query", "user.name", "-o", "tsv"], 60_000);
   if (acct.code !== 0) {
-    line("az 登入狀態", "尚未登入");
-    console.log("  → 執行 az login 之後再試。");
+    line("az login status", "not logged in");
+    console.log("  → Run az login, then retry.");
     return;
   }
-  line("az 登入身分", acct.stdout.trim());
+  line("az identity", acct.stdout.trim());
 
   const tok = await run(
     AZ_BIN,
@@ -396,10 +397,10 @@ async function probeViaAz(url: string): Promise<void> {
     120_000,
   );
   if (tok.code !== 0) {
-    line("取得 ADO token", `失敗：${tok.stderr.trim().slice(0, 200)}`);
+    line("get ADO token", `failed: ${tok.stderr.trim().slice(0, 200)}`);
     return;
   }
-  line("ADO token 有效至", tok.stdout.trim());
+  line("ADO token expires", tok.stdout.trim());
 
   const res = await run(
     AZ_BIN,
@@ -407,25 +408,25 @@ async function probeViaAz(url: string): Promise<void> {
     120_000,
   );
   if (res.code === 0) {
-    line("az 讀取 PR", `✅ 成功：${res.stdout.trim().slice(0, 80)}`);
+    line("az read PR", `✅ success: ${res.stdout.trim().slice(0, 80)}`);
     console.log("");
-    console.log("  → az 能通但 prloop 不能，代表帳號與權限沒問題，問題在 Node 這一側：");
-    console.log("     憑證（NODE_OPTIONS=--use-system-ca 或 NODE_EXTRA_CA_CERTS）或 proxy。");
-    console.log("     az 是 Python，用的是 REQUESTS_CA_BUNDLE，與 Node 的信任來源不同。");
+    console.log("  → az works but prloop does not: account and permissions are fine, the problem is on Node's side:");
+    console.log("     certificates (NODE_OPTIONS=--use-system-ca or NODE_EXTRA_CA_CERTS) or proxy.");
+    console.log("     az is Python and uses REQUESTS_CA_BUNDLE, a different trust source than Node.");
   } else {
     const err = (res.stderr || res.stdout).trim();
-    line("az 讀取 PR", `❌ 失敗`);
+    line("az read PR", `❌ failed`);
     console.log(`  ${err.slice(0, 400)}`);
     console.log("");
-    console.log("  → az 也失敗，代表問題不在 Node，而在帳號、權限或網路本身。");
+    console.log("  → az fails too, so the problem is not Node but the account, permissions or the network.");
     if (/certificate|SSL|CERTIFICATE_VERIFY/i.test(err)) {
-      console.log("     看起來是憑證問題。az 用的是 REQUESTS_CA_BUNDLE 這個變數。");
+      console.log("     Looks like a certificate problem. az reads REQUESTS_CA_BUNDLE.");
     }
     if (/403|Forbidden|does not have permission/i.test(err)) {
-      console.log("     403：帳號通過認證但沒有這個 repo 的存取權。");
+      console.log("     403: authenticated but no access to this repo.");
     }
     if (/404|TF401019|does not exist/i.test(err)) {
-      console.log("     404：PR id、repo 名稱或 project 名稱不對。");
+      console.log("     404: wrong PR id, repo name or project name.");
     }
   }
 }
@@ -442,21 +443,21 @@ async function probeConnectVariants(host: string, port: number): Promise<void> {
   const proxy = bypassesProxy(host) ? "" : HTTPS_PROXY || HTTP_PROXY;
   if (!proxy) return;
 
-  console.log("\n=== 4b. proxy 接受哪種 CONNECT 標頭 ===");
+  console.log("\n=== 4b. Which CONNECT headers the proxy accepts ===");
 
   const variants: Array<{ name: string; headers: string[] }> = [
-    { name: "不帶任何額外標頭", headers: [] },
-    { name: "只帶 User-Agent", headers: [`User-Agent: ${USER_AGENT}`] },
+    { name: "no extra headers", headers: [] },
+    { name: "User-Agent only", headers: [`User-Agent: ${USER_AGENT}`] },
     {
-      name: "git 風格（User-Agent: git/2.34.1)",
+      name: "git-style (User-Agent: git/2.34.1)",
       headers: ["User-Agent: git/2.34.1", "Proxy-Connection: Keep-Alive"],
     },
     {
-      name: "undici 風格（Host 不帶埠 + Connection: close）",
+      name: "undici-style (Host w/o port, close)",
       headers: [`User-Agent: ${USER_AGENT}`, "Connection: close"],
       },
     {
-      name: "瀏覽器風格",
+      name: "browser-style",
       headers: [
         "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Proxy-Connection: Keep-Alive",
@@ -466,7 +467,7 @@ async function probeConnectVariants(host: string, port: number): Promise<void> {
 
   const pu = new URL(proxy);
   for (const v of variants) {
-    const hostHeader = v.name.includes("Host 不帶埠") ? host : `${host}:${port}`;
+    const hostHeader = v.name.includes("Host w/o port") ? host : `${host}:${port}`;
     const status = await new Promise<string>((resolve) => {
       const s = net.connect(
         { host: pu.hostname, port: Number(pu.port || 80), timeout: 12_000 },
@@ -482,28 +483,28 @@ async function probeConnectVariants(host: string, port: number): Promise<void> {
         s.destroy();
         resolve((buf.toString("utf8").split("\r\n")[0] ?? "").trim());
       });
-      s.once("error", (e: NodeJS.ErrnoException) => resolve(`連線錯誤：${e.message}`));
+      s.once("error", (e: NodeJS.ErrnoException) => resolve(`connection error: ${e.message}`));
       s.once("timeout", () => {
         s.destroy();
-        resolve("逾時");
+        resolve("timeout");
       });
     });
     const ok = / 200 /.test(status);
-    console.log(`  ${ok ? "✅" : "❌"} ${v.name.padEnd(34)} → ${status}`);
+    console.log(`  ${ok ? "✅" : "❌"} ${v.name.padEnd(36)} → ${status}`);
   }
   console.log("");
-  console.log("  有 ✅ 的話，把它的差異告訴我（或用 PRR_USER_AGENT 換成該組的 UA）。");
-  console.log("  全部 ❌ 表示 proxy 擋的不是標頭，而是來源 IP、TLS 指紋或目的地白名單。");
+  console.log("  Any ✅? Report what differs (or set PRR_USER_AGENT to that variant's UA).");
+  console.log("  All ❌ means the proxy blocks on source IP, TLS fingerprint or a destination allowlist, not headers.");
 }
 
 async function main() {
   const url = process.argv[2];
   if (!url) {
-    console.error("用法：tsx scripts/probe.ts '<PR URL>'");
+    console.error("Usage: tsx scripts/probe.ts '<PR URL>'");
     process.exit(1);
   }
 
-  console.log("\n=== 1. 設定值與來源 ===");
+  console.log("\n=== 1. Config values and their sources ===");
   reportProvenance([
     "PRR_ADO_PAT",
     "PRR_AUTH_MODE",
@@ -513,20 +514,20 @@ async function main() {
     "HTTPS_PROXY",
     "NODE_EXTRA_CA_CERTS",
   ]);
-  line("生效的 api-version", ADO_API_VERSION);
-  line("proxy 設定", proxySummary());
+  line("effective api-version", ADO_API_VERSION);
+  line("proxy config", proxySummary());
   line("User-Agent", USER_AGENT);
   if (!HTTPS_PROXY && !HTTP_PROXY) {
-    console.log("  （若公司網路只能透過 proxy 對外，未設這個變數會直接連線失敗）");
+    console.log("  (On a network that only reaches the internet through a proxy, leaving this unset fails outright)");
   }
   if (!/^\d+\.\d+$/.test(ADO_API_VERSION)) {
     console.log(
-      `  ⚠️  「${ADO_API_VERSION}」不是合法格式。ADO 只接受 x.y（例如 7.1、6.0），` +
-        "少了小數點會被伺服器拒絕。",
+      `  ⚠️  "${ADO_API_VERSION}" is malformed. ADO accepts only x.y (e.g. 7.1, 6.0); ` +
+        "without the decimal point the server rejects it.",
     );
   }
 
-  console.log("\n=== 2. URL 解析 ===");
+  console.log("\n=== 2. URL parsing ===");
   const ref = parsePrUrl(url);
   line("collection / org", ref.org);
   line("project", ref.project);
@@ -534,22 +535,22 @@ async function main() {
   line("PR id", String(ref.prId));
   line("API base", ref.baseUrl);
   if (ref.baseUrl.includes("dev.azure.com")) {
-    console.log("  → 這是 Azure DevOps Services（雲端）。api-version 用預設的 7.1 即可。");
+    console.log("  → Azure DevOps Services (cloud). The default api-version 7.1 is fine.");
   } else {
-    console.log("  → 這是 on-prem Server。api-version 需配合伺服器版本（2019→5.0、2020→6.0、2022→7.0）。");
+    console.log("  → On-prem Server. api-version must match the server release (2019→5.0, 2020→6.0, 2022→7.0).");
   }
 
-  console.log("\n=== 3. 認證 ===");
-  line("模式", await describeAuthMode());
+  console.log("\n=== 3. Authentication ===");
+  line("mode", await describeAuthMode());
   let header: string;
   try {
     header = await authHeader();
-    line("Authorization", `${header.split(" ")[0]} ...（長度 ${header.length}）`);
+    line("Authorization", `${header.split(" ")[0]} ... (length ${header.length})`);
     if (ADO_PAT && /\s/.test(ADO_PAT)) {
-      console.log("  ⚠️  PAT 內含空白字元，多半是複製時帶到換行或空格。");
+      console.log("  ⚠️  PAT contains whitespace, usually a newline or space picked up when copying.");
     }
   } catch (e) {
-    line("取得認證失敗", e instanceof Error ? e.message : String(e));
+    line("auth failed", e instanceof Error ? e.message : String(e));
     process.exit(1);
   }
 
@@ -559,10 +560,10 @@ async function main() {
 
   await probeConnectVariants(new URL(ref.baseUrl).hostname, Number(new URL(ref.baseUrl).port || 443));
 
-  console.log("\n=== 5. 用目前設定實際請求一次 ===");
+  console.log("\n=== 5. One real request with the current config ===");
   await rawGet(`${prBase(ref)}?api-version=${ADO_API_VERSION}`, header);
 
-  console.log("\n=== 6. 逐一測試各 api-version，找出這台伺服器接受哪個 ===");
+  console.log("\n=== 6. Testing each api-version to find what this server accepts ===");
   const working: string[] = [];
   for (const v of CANDIDATE_VERSIONS) {
     try {
@@ -575,7 +576,7 @@ async function main() {
       console.log(`  api-version=${v.padEnd(4)} → ${res.status} ${res.statusText}${ok ? "  ✅" : ""}`);
       if (ok) working.push(v);
     } catch (e) {
-      console.log(`  api-version=${v.padEnd(4)} → 連線失敗：${e instanceof Error ? e.message : String(e)}`);
+      console.log(`  api-version=${v.padEnd(4)} → connection failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -583,29 +584,29 @@ async function main() {
 
   // curl uses the system trust store and honours the proxy variables, so reproducing the
   // same request with it isolates Node from everything else in one step.
-  console.log("\n=== 8. 用 curl 重現同一個請求（隔離 Node）===");
-  console.log("  複製這行執行；它用系統 CA 與 HTTPS_PROXY，與 Node 的信任來源無關：");
+  console.log("\n=== 8. Reproduce the same request with curl (isolates Node) ===");
+  console.log("  Copy and run this; it uses the system CA and HTTPS_PROXY, unrelated to Node's trust source:");
   console.log("");
   console.log(`    curl -sS -u ":$PRR_ADO_PAT" \\`);
   console.log(`      "${prBase(ref)}?api-version=${ADO_API_VERSION}" | head -c 300`);
   console.log("");
-  console.log("  回 JSON = PAT 有效且網路可達 → 問題在 Node（憑證或 proxy）");
-  console.log("  回 HTML = PAT 無效或 scope 不足（ADO 用 203 + 登入頁代替 401）");
+  console.log("  JSON back = PAT valid and network reachable → the problem is Node (certificates or proxy)");
+  console.log("  HTML back = PAT invalid or scope insufficient (ADO sends 203 + a sign-in page instead of 401)");
 
-  console.log("\n=== 結論 ===");
+  console.log("\n=== Conclusion ===");
   if (working.length > 0) {
-    console.log(`  這台伺服器接受：${working.join("、")}`);
+    console.log(`  This server accepts: ${working.join(", ")}`);
     if (!working.includes(ADO_API_VERSION)) {
-      console.log(`  你目前設的是「${ADO_API_VERSION}」，不在可用清單中。`);
-      console.log(`  → 把 .env 的 PRR_ADO_API_VERSION 改成 ${working[0]}，或整行刪掉用預設值。`);
-      console.log(`  → 若 .env 改了沒效，檢查 shell 是否有 export PRR_ADO_API_VERSION（見第 1 節）。`);
+      console.log(`  You have "${ADO_API_VERSION}" set, which is not in that list.`);
+      console.log(`  → Set PRR_ADO_API_VERSION in .env to ${working[0]}, or delete the line to use the default.`);
+      console.log(`  → If editing .env has no effect, check for an exported PRR_ADO_API_VERSION in your shell (see section 1).`);
     } else {
-      console.log("  api-version 沒問題。若 prloop 仍失敗，問題在其他階段（模型或發佈）。");
+      console.log("  api-version is fine. If prloop still fails, the problem is a later stage (model or posting).");
     }
   } else {
-    console.log("  所有 api-version 都失敗 —— 問題不在版本號，而在認證或網路。");
-    console.log("  依第 4 節的訊息判斷：登入頁=PAT 無效或 scope 不足；");
-    console.log("  404=PR id 或 repo 名稱不對；連線失敗=DNS/憑證/proxy。");
+    console.log("  Every api-version failed -- the version is not the problem, auth or the network is.");
+    console.log("  Read section 4: sign-in page = PAT invalid or scope insufficient;");
+    console.log("  404 = wrong PR id or repo name; connection failed = DNS/certificates/proxy.");
   }
   console.log();
 }

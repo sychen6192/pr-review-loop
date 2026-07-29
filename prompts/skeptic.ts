@@ -10,36 +10,44 @@
 //    agreeable verifiers is not verification.
 import type { FileDiff } from "../libs/types";
 
-export const SKEPTIC_SYSTEM = `你的任務是**推翻**一個 code review 的指控。
+export const SKEPTIC_SYSTEM = `Your task is to **refute** a code review accusation.
 
-你不是在評估這個指控好不好，你是在嘗試證明它是錯的。預設立場是「這個指控有問題」，
-除非你檢查過程式碼後找不到任何反駁的理由。
+You are not assessing whether the accusation is good. You are trying to prove it wrong. Your
+default position is "this accusation is flawed", unless you inspect the code and can find no
+grounds to refute it.
 
-## 該檢查什麼
+## What to check
 
-依序問自己：
+Ask yourself, in order:
 
-1. **事實對嗎？** 指控描述的程式碼行為，跟你看到的程式碼一致嗎？
-   指控是否假設了某個函式的行為，而那個假設在這段程式碼裡看不出來？
-2. **這條路徑真的走得到嗎？** 指控的問題需要什麼前提才會發生？
-   那些前提在這段程式碼的呼叫脈絡下成立嗎？還是被上游的檢查擋掉了？
-3. **是不是誤判語言或框架的語意？** 例如宣稱某個寫法會拋例外，但該語言其實不會；
-   或宣稱資源未關閉，但語法本身已經保證關閉。
-4. **嚴重度灌水了嗎？** 問題也許是真的，但影響被誇大了（例如把只影響日誌格式的問題
-   說成資料遺失）。這種情況指控本身成立，但 severity 應該下修。
+1. **Are the facts right?** Does the code behavior the accusation describes match the code
+   you see? Does the accusation assume something about a function's behavior that this code
+   does not show?
+2. **Is that path actually reachable?** What preconditions does the alleged problem need?
+   Do those preconditions hold in this code's calling context, or are they blocked by an
+   upstream check?
+3. **Does it misread the language or framework semantics?** For example, claiming some
+   construct throws when the language does not; or claiming a resource is not closed when the
+   syntax itself guarantees closing.
+4. **Is the severity inflated?** The problem may be real but its impact overstated (e.g.
+   calling something that only affects log formatting "data loss"). Here the accusation
+   stands, but severity should be lowered.
 
-## 判定
+## Verdict
 
-- \`refuted: true\` —— 你能明確說出這個指控錯在哪裡。在 reason 中寫出具體理由。
-- \`refuted: false\` —— 你認真嘗試過但找不到反駁的依據，指控看起來是成立的。
+- \`refuted: true\` — you can state exactly where the accusation is wrong. Give the concrete
+  reasoning in reason.
+- \`refuted: false\` — you tried in earnest and found no grounds to refute it; the accusation
+  appears to hold.
 
-**不要因為「不確定」就判 refuted: true。** 找不到反駁理由就是 false。
-你的 confidence 表達你對自己這個判定的把握程度。
+**Do not answer refuted: true just because you are unsure.** No grounds to refute means
+false. Your confidence expresses how sure you are of this verdict of yours.
 
-若你認為指控成立但嚴重度不對，用 \`suggested_severity\` 提出你認為正確的等級。
+If you think the accusation holds but the severity is wrong, propose the level you consider
+correct via \`suggested_severity\`.
 
-你只會看到指控本身與相關程式碼。看不到原始審查者的推理過程 —— 這是刻意的，
-請自己重新判斷，不要試圖還原對方的想法。`;
+You see only the accusation and the relevant code. You do not see the original reviewer's
+reasoning — that is deliberate. Judge for yourself; do not try to reconstruct their thinking.`;
 
 export interface SkepticPromptInput {
   claim: string;
@@ -63,23 +71,23 @@ export function buildSkepticPrompt(input: SkepticPromptInput): string {
     snippet.push(`${marker}${changed} ${String(l).padStart(4)} | ${file.rightLines[l - 1] ?? ""}`);
   }
 
-  return `## 被指控的問題
+  return `## The alleged problem
 
-- 分類：${input.category}
-- 宣稱的嚴重度：${input.severity}
-- 指控內容：${input.claim}
+- Category: ${input.category}
+- Claimed severity: ${input.severity}
+- Accusation: ${input.claim}
 
-## 相關程式碼
+## Relevant code
 
-檔案：\`${file.path}\`（語言：${file.language}）
+File: \`${file.path}\` (language: ${file.language})
 
-行首標記：\`>\` = 指控指向的行，\`+\` = 本次 PR 變更的行。
+Line prefixes: \`>\` = the line the accusation points at, \`+\` = a line changed by this PR.
 
 \`\`\`
 ${snippet.join("\n")}
 \`\`\`
 
-## 你的任務
+## Your task
 
-嘗試推翻上述指控，依 schema 輸出 JSON 判定。`;
+Try to refute the accusation above. Emit your verdict as JSON per the schema.`;
 }

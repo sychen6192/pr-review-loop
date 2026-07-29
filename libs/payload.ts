@@ -51,7 +51,7 @@ export function buildDiffPayload(files: FileDiff[], budget = MAX_DIFF_CHARS): Di
 
   let text = chunks.join("\n\n");
   if (omittedFiles.length > 0) {
-    text += `\n\n### 因篇幅未納入的變更檔案（${omittedFiles.length}）\n${omittedFiles.map((p) => `- ${p}`).join("\n")}`;
+    text += `\n\n### Changed files omitted for size (${omittedFiles.length})\n${omittedFiles.map((p) => `- ${p}`).join("\n")}`;
   }
   return { text, includedFiles, omittedFiles };
 }

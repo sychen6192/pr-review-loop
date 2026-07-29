@@ -18,9 +18,9 @@ import type { FinderOutput } from "../gates/finder";
 import type { RawFinding } from "../libs/types";
 
 function usage(): never {
-  console.error(`用法：
+  console.error(`Usage:
   tsx scripts/local-review.ts prompt <repo> <base> <head> [out.md]
-  tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json> [model 名稱]`);
+  tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json> [model name]`);
   process.exit(1);
 }
 
@@ -30,7 +30,7 @@ async function main() {
 
   const ctx = await buildLocalReviewContext({ repo, base, head });
   if (ctx.files.length === 0) {
-    console.error("沒有可審查的變更");
+    console.error("No changes to review");
     process.exit(1);
   }
 
@@ -46,7 +46,7 @@ async function main() {
     const full = `${FINDER_SYSTEM}\n\n${"=".repeat(78)}\n\n${text}`;
     if (arg5) {
       fs.writeFileSync(arg5, full);
-      console.log(`prompt 已寫入 ${arg5}（${full.length} 字元，套用規則：${rules.map((r) => r.name).join("、")}）`);
+      console.log(`Prompt written to ${arg5} (${full.length} chars, rules: ${rules.map((r) => r.name).join(", ")})`);
     } else {
       console.log(full);
     }
@@ -57,7 +57,7 @@ async function main() {
 
   const parsed = parseJsonObject<{ findings?: RawFinding[] }>(fs.readFileSync(arg5, "utf8"));
   if (!parsed.ok) {
-    console.error(`findings 檔案無法解析：${parsed.error}`);
+    console.error(`Cannot parse findings file: ${parsed.error}`);
     process.exit(1);
   }
   const findings = Array.isArray(parsed.value.findings) ? parsed.value.findings : [];
@@ -70,12 +70,12 @@ async function main() {
 
   const candidates = anchorAndDedupe([output], ctx.files);
 
-  console.log(`\n${"=".repeat(78)}\n錨定結果（共 ${findings.length} 筆）\n${"=".repeat(78)}`);
+  console.log(`\n${"=".repeat(78)}\nAnchor results (${findings.length} findings)\n${"=".repeat(78)}`);
   for (const f of candidates.merged) {
-    console.log(`  [OK]   ${f.file}:${f.anchor?.startLine}  ${f.severity.padEnd(8)} ${f.claim}`);
+    console.log(`  [OK]       ${f.file}:${f.anchor?.startLine}  ${f.severity.padEnd(8)} ${f.claim}`);
   }
   for (const f of candidates.degraded) {
-    console.log(`  [降級] ${f.file}  ${f.anchorFailure}  — ${f.claim}`);
+    console.log(`  [DEGRADED] ${f.file}  ${f.anchorFailure}  — ${f.claim}`);
   }
 
   // No skeptic available offline: treat every anchored finding as verified so the
@@ -83,7 +83,7 @@ async function main() {
   const survivors = candidates.merged.map((f) => ({ ...f, skepticVerdicts: 1, skepticRefuted: 0 }));
   const agg = finalize(candidates, survivors);
 
-  console.log(`\n${"=".repeat(78)}\n將發佈的 summary\n${"=".repeat(78)}`);
+  console.log(`\n${"=".repeat(78)}\nSummary to be posted\n${"=".repeat(78)}`);
   console.log(
     renderSummary({
       ctx,

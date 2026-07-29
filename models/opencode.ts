@@ -50,7 +50,7 @@ export function traceEvent(line: string, prefix: string, acc: Acc): void {
   } else if (kind === "step-finish") {
     const tokens = (part["tokens"] ?? {}) as Record<string, unknown>;
     if (tokens["output"] !== undefined) {
-      logVerbose(`${prefix} -- step 結束（output tokens=${String(tokens["output"])}）`);
+      logVerbose(`${prefix} -- step finished (output tokens=${String(tokens["output"])})`);
     }
   } else if (kind === "error") {
     logVerbose(`${prefix} [WARN] ${JSON.stringify(ev).slice(0, 300)}`);
@@ -62,10 +62,10 @@ export function inlineSchema(req: ChatRequest): string {
   if (!req.schema) return req.user;
   return `${req.user}
 
-## 輸出格式（務必嚴格遵守）
+## Output format (follow exactly)
 
-只輸出一個 JSON 物件，符合以下 JSON Schema。不要輸出任何說明文字、不要用 markdown
-程式碼區塊包起來、不要在 JSON 前後加任何內容。
+Output one JSON object matching the JSON Schema below. No explanatory text, no markdown
+code fence, nothing before or after the JSON.
 
 \`\`\`json
 ${JSON.stringify(req.schema, null, 2)}
@@ -74,7 +74,7 @@ ${JSON.stringify(req.schema, null, 2)}
 
 function runOnce(label: string, model: string, prompt: string): Promise<ChatResponse> {
   return new Promise((resolve) => {
-    log(`[${label}] opencode session 啟動（model=${model || "（agent 預設）"}）`);
+    log(`[${label}] opencode session started (model=${model || "(agent default)"})`);
     const stopHeartbeat = startHeartbeat(`[${label}]`);
     const started = Date.now();
 
@@ -111,7 +111,7 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
 
     let killEscalation: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
-      logVerbose(`[${label}] 逾時 ${AGENT_TIMEOUT_MS}ms，送出 SIGTERM`);
+      logVerbose(`[${label}] timeout after ${AGENT_TIMEOUT_MS}ms, sending SIGTERM`);
       child.kill("SIGTERM");
       killEscalation = setTimeout(() => child.kill("SIGKILL"), 10_000);
     }, AGENT_TIMEOUT_MS);
@@ -131,13 +131,13 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
         resolve({ text: "", model, error: spawnError });
         return;
       }
-      log(`[${label}] 完成（耗時 ${secs} 秒、${text.length} 字元）`);
+      log(`[${label}] done (elapsed ${secs}s, ${text.length} chars)`);
       resolve({ text, model });
     };
 
     child.on("close", finish);
     child.on("error", (err) => {
-      spawnError = `opencode 啟動失敗：${err.message}（確認 opencode CLI 已安裝，或設 PRR_OPENCODE_BIN）`;
+      spawnError = `opencode failed to start: ${err.message} (install the opencode CLI, or set PRR_OPENCODE_BIN)`;
       logVerbose(`[${label}] ${spawnError}`);
       finish();
     });

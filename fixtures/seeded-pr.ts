@@ -183,19 +183,19 @@ export interface ExpectedAnchor {
 export const EXPECTED_ANCHORS: ExpectedAnchor[] = [
   // --- the seeded defects ---
   {
-    name: "可變預設參數",
+    name: "mutable default argument",
     file: "/src/payment/refund_service.py",
     quote: "    def process_refund(self, order_id, amount, audit_tags=[]):",
     expect: 15,
   },
   {
-    name: "金流呼叫在交易之內",
+    name: "payment call inside the transaction",
     file: "/src/payment/refund_service.py",
     quote: "        self.gateway.refund(order.payment_id, amount)",
     expect: 25,
   },
   {
-    name: "吞掉例外",
+    name: "swallowed exception",
     file: "/src/payment/refund_service.py",
     quote: "        except Exception:",
     expect: 34,
@@ -207,25 +207,25 @@ export const EXPECTED_ANCHORS: ExpectedAnchor[] = [
     expect: 12,
   },
   {
-    name: "ConcurrentHashMap 非原子複合操作",
+    name: "ConcurrentHashMap non-atomic compound operation",
     file: "/src/main/java/shop/InventoryService.java",
     quote: "        stock.put(sku, stock.get(sku) - qty);",
     expect: 22,
   },
   {
-    name: "Collectors.toMap 無 merge function",
+    name: "Collectors.toMap without a merge function",
     file: "/src/main/java/shop/InventoryService.java",
     quote: "        return items.stream().collect(Collectors.toMap(Item::sku, Item::name));",
     expect: 26,
   },
   {
-    name: "Server Action 無授權檢查",
+    name: "Server Action with no authorization check",
     file: "/app/checkout/actions.ts",
     quote: "export async function applyRefund(orderId: string, amount: number) {",
     expect: 5,
   },
   {
-    name: "殘留 console.log",
+    name: "leftover console.log",
     file: "/app/checkout/page.tsx",
     quote: "  console.log('cart', cart)",
     expect: 6,
@@ -234,33 +234,33 @@ export const EXPECTED_ANCHORS: ExpectedAnchor[] = [
   // --- the anchoring edge cases, which are the real point of this fixture ---
   {
     // This exact line appears at 27 and 38. Guessing either one is a bug.
-    name: "重複行且無 context → 必須判定歧義，不得猜第一個",
+    name: "duplicate line, no context -> must report ambiguous, never guess the first",
     file: "/src/payment/refund_service.py",
     quote: '        logger.info("refund processed")',
     expect: "quote-ambiguous",
   },
   {
-    name: "重複行 + context_before → 錨定到 cancel_refund（38）而非 process_refund（27）",
+    name: "duplicate line + context_before -> anchors to cancel_refund (38), not process_refund (27)",
     file: "/src/payment/refund_service.py",
     quote: '        logger.info("refund processed")',
     contextBefore: "        self.db.save(order)",
     expect: 38,
   },
   {
-    name: "重複行 + context_before → 錨定到 process_refund（27）",
+    name: "duplicate line + context_before -> anchors to process_refund (27)",
     file: "/src/payment/refund_service.py",
     quote: '        logger.info("refund processed")',
     contextBefore: "        self.db.commit()",
     expect: 27,
   },
   {
-    name: "幻覺引用 → 必須攔下",
+    name: "hallucinated quote -> must be rejected",
     file: "/src/payment/refund_service.py",
     quote: "        if order.refunded > order.total:",
     expect: "quote-not-found",
   },
   {
-    name: "模型改寫縮排 → 第二層匹配仍應定位",
+    name: "model rewrote indentation -> tier-two match still locates it",
     file: "/src/main/java/shop/InventoryService.java",
     quote: "public void reserve(String sku, int qty) {",
     expect: 18,

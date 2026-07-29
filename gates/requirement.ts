@@ -72,31 +72,31 @@ export async function runRequirementGate(
     linked = await getLinkedRequirements(input.ref);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    log(`[WARN] 取得 work items 失敗：${msg}`);
+    log(`[WARN] Failed to fetch work items: ${msg}`);
     return { result: { workItems: [], criteria: [], extras: [], error: msg } };
   }
 
   if (linked.items.length === 0) {
-    log("PR 未連結任何 work item，略過需求軸");
+    log("PR has no linked work item; skipping the requirement axis");
     return {
-      result: { workItems: [], criteria: [], extras: [], skipped: "PR 未連結任何 work item" },
+      result: { workItems: [], criteria: [], extras: [], skipped: "PR has no linked work item" },
     };
   }
 
   const withSpec = linked.items.filter((w) => w.acceptanceCriteria || w.description);
   if (withSpec.length === 0) {
-    log("連結的 work item 沒有 acceptance criteria 或描述，略過需求軸");
+    log("Linked work items have no acceptance criteria or description; skipping the requirement axis");
     return {
       result: {
         workItems: linked.items,
         criteria: [],
         extras: [],
-        skipped: "連結的 work item 沒有 acceptance criteria 或描述可供比對",
+        skipped: "Linked work items have no acceptance criteria or description to check against",
       },
     };
   }
 
-  log(`需求軸：比對 ${withSpec.length} 個 work item（${withSpec.map((w) => `#${w.id}`).join("、")}）`);
+  log(`requirement axis: checking ${withSpec.length} work items (${withSpec.map((w) => `#${w.id}`).join(", ")})`);
 
   const prompt = buildRequirementPrompt({ pr: input.pr, workItems: withSpec, files: input.files });
   const res = await input.runner.chat({
@@ -108,7 +108,7 @@ export async function runRequirementGate(
   });
 
   if (res.error) {
-    log(`[FAIL] 需求軸模型呼叫失敗：${res.error}`);
+    log(`[FAIL] requirement axis model call failed: ${res.error}`);
     return {
       result: { workItems: withSpec, criteria: [], extras: [], error: res.error },
       prompt,
@@ -117,7 +117,7 @@ export async function runRequirementGate(
 
   const parsed = parseJsonObject<{ criteria?: unknown; extras?: unknown }>(res.text);
   if (!parsed.ok) {
-    log(`[FAIL] 需求軸輸出無法解析：${parsed.error}`);
+    log(`[FAIL] requirement axis output unparseable: ${parsed.error}`);
     return {
       result: { workItems: withSpec, criteria: [], extras: [], error: parsed.error },
       prompt,
@@ -135,9 +135,9 @@ export async function runRequirementGate(
   const counts = new Map<string, number>();
   for (const c of criteria) counts.set(c.verdict, (counts.get(c.verdict) ?? 0) + 1);
   log(
-    `需求軸：${criteria.length} 條 criteria（` +
-      [...counts.entries()].map(([k, v]) => `${k} ${v}`).join("、") +
-      `）、${extras.length} 項範圍外變更`,
+    `requirement axis: ${criteria.length} criteria (` +
+      [...counts.entries()].map(([k, v]) => `${k} ${v}`).join(", ") +
+      `), ${extras.length} out-of-scope changes`,
   );
 
   return { result: { workItems: withSpec, criteria, extras }, prompt, raw: res.text };
@@ -171,7 +171,7 @@ export function toRequirementFindings(
       file: c.file,
       quote: c.quote,
       side: "right",
-      claim: `驗收條件${c.verdict === "partial" ? "僅部分滿足" : "的實作方向與需求不符"}：${c.criterion}`,
+      claim: `${c.verdict === "partial" ? "Acceptance criterion only partially met" : "Implementation does not match the acceptance criterion"}: ${c.criterion}`,
       evidence: c.note,
     });
   }
@@ -185,8 +185,8 @@ export function toRequirementFindings(
       file: e.file,
       quote: e.quote,
       side: "right",
-      claim: `此變更不在任何驗收條件的範圍內：${e.claim}`,
-      evidence: "需求之外的變更未必是問題，但應由人確認是否有意為之。",
+      claim: `Out of scope: no acceptance criterion covers this change: ${e.claim}`,
+      evidence: "Out-of-scope changes are not necessarily wrong, but a human should confirm they were intentional.",
     });
   }
 

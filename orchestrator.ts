@@ -32,10 +32,10 @@ export interface ReviewRunResult {
 export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult> {
   const started = Date.now();
 
-  banner("Step 1/4：取得 PR 變更內容");
+  banner("Step 1/4: fetch PR changes");
   const ctx = await buildReviewContext(opts.ref, opts.compareTo);
   const run = createRunDir(opts.ref, ctx.iteration.id);
-  log(`artifacts：${run.dir}`);
+  log(`artifacts: ${run.dir}`);
 
   run.saveJson("context.json", {
     ref: opts.ref,
@@ -53,7 +53,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   });
 
   if (ctx.files.length === 0) {
-    log("沒有可審查的程式碼變更，結束");
+    log("No reviewable code changes, exiting");
     const agg: AggregateResult = {
       inline: [],
       belowBar: [],
@@ -71,7 +71,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
 
   // The two axes run concurrently and blind to each other: neither model sees the other's
   // output, so "the code is clean" can't excuse a missing requirement, or vice versa.
-  banner("Step 2/4：執行靜態分析、需求軸與程式碼軸");
+  banner("Step 2/4: static analysis, requirement axis and code axis");
   const [staticResult, reqOut, finderOut] = await Promise.all([
     SKIP_STATIC
       ? Promise.resolve<StaticResult>({
@@ -80,7 +80,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
           suppressedCount: 0,
           ranTools: [],
           skipped: [],
-          skippedReason: "依設定跳過靜態分析",
+          skippedReason: "static analysis skipped by config",
         })
       : runStaticGate(ctx.files),
     SKIP_REQUIREMENT
@@ -89,7 +89,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
             workItems: [],
             criteria: [],
             extras: [],
-            skipped: "依設定跳過需求檢查",
+            skipped: "requirement check skipped by config",
           },
         })
       : runRequirementGate({ ref: opts.ref, pr: ctx.pr, files: ctx.files, runner: opts.runner }),
@@ -101,7 +101,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     }),
   ]);
 
-  if (staticResult.skippedReason) log(`靜態分析：${staticResult.skippedReason}`);
+  if (staticResult.skippedReason) log(`Static analysis: ${staticResult.skippedReason}`);
   run.saveJson("static.json", staticResult);
 
   const req = reqOut.result;
@@ -116,7 +116,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   });
   run.saveJson("finder-outputs.json", outputs.map((o) => ({ ...o, raw: undefined })));
 
-  banner("Step 3/4：定位、對抗驗證與裁決");
+  banner("Step 3/4: anchor, adversarial verification and verdicts");
   const candidates = anchorAndDedupe(outputs, ctx.files);
 
   // Adversarial verification. The finder ran in coverage mode and is expected to
@@ -153,7 +153,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     stats: agg.stats,
   });
 
-  banner("Step 4/4：發佈留言");
+  banner("Step 4/4: post comments");
   const durationSec = Math.round((Date.now() - started) / 1000);
   const finderErrors = outputs
     .filter((o) => o.error)

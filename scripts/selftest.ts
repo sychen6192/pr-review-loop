@@ -45,53 +45,53 @@ function section(t: string) {
 }
 
 // --- blob line splitting ---
-section("blob 行切分（CRLF / BOM / 結尾換行）");
-eq("LF 三行", splitLines(Buffer.from("a\nb\nc")), ["a", "b", "c"]);
-eq("結尾換行不產生幽靈行", splitLines(Buffer.from("a\nb\n")), ["a", "b"]);
-eq("CRLF 保留 \\r", splitLines(Buffer.from("a\r\nb\r\n")), ["a\r", "b\r"]);
-eq("BOM 被移除", splitLines(Buffer.from("﻿a\nb")), ["a", "b"]);
-eq("空檔案", splitLines(Buffer.from("")), []);
-eq("單行無換行", splitLines(Buffer.from("only")), ["only"]);
+section("blob line splitting (CRLF / BOM / trailing newline)");
+eq("LF three lines", splitLines(Buffer.from("a\nb\nc")), ["a", "b", "c"]);
+eq("trailing newline makes no ghost line", splitLines(Buffer.from("a\nb\n")), ["a", "b"]);
+eq("CRLF keeps \\r", splitLines(Buffer.from("a\r\nb\r\n")), ["a\r", "b\r"]);
+eq("BOM stripped", splitLines(Buffer.from("﻿a\nb")), ["a", "b"]);
+eq("empty file", splitLines(Buffer.from("")), []);
+eq("single line, no newline", splitLines(Buffer.from("only")), ["only"]);
 
 // --- diff ---
-section("diff 與 hunk 行號");
+section("diff and hunk line numbers");
 {
   const left = ["a", "b", "c", "d", "e"];
   const right = ["a", "b", "X", "d", "e"];
   const edits = diffLines(left, right);
   const { hunks, changedRightLines, changedLeftLines } = buildHunks(left, right, edits);
-  eq("單行替換 → 1 個 hunk", hunks.length, 1);
-  eq("右側變更行 = 第 3 行", [...changedRightLines], [3]);
-  eq("左側刪除行 = 第 3 行", [...changedLeftLines], [3]);
+  eq("single-line replace -> 1 hunk", hunks.length, 1);
+  eq("right changed lines = line 3", [...changedRightLines], [3]);
+  eq("left deleted lines = line 3", [...changedLeftLines], [3]);
   const h = hunks[0]!;
-  check("hunk 涵蓋整個小檔案", h.rightStart === 1 && h.rightStart + h.rightCount - 1 === 5);
+  check("hunk covers the whole small file", h.rightStart === 1 && h.rightStart + h.rightCount - 1 === 5);
 }
 {
   // Line numbers must stay correct after an insertion shifts everything below it.
   const left = ["l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9", "l10"];
   const right = [...left.slice(0, 5), "NEW", ...left.slice(5)];
   const { changedRightLines } = buildHunks(left, right, diffLines(left, right));
-  eq("插入行為右側第 6 行", [...changedRightLines], [6]);
+  eq("inserted line is right line 6", [...changedRightLines], [6]);
 }
 {
   const left: string[] = [];
   const right = ["a", "b"];
   const { hunks, changedRightLines } = buildHunks(left, right, diffLines(left, right));
-  eq("新檔案：兩行皆為變更", [...changedRightLines], [1, 2]);
-  check("新檔案有 hunk", hunks.length === 1);
+  eq("new file: both lines changed", [...changedRightLines], [1, 2]);
+  check("new file has a hunk", hunks.length === 1);
 }
 {
   const same = ["x", "y"];
   const { hunks } = buildHunks(same, same, diffLines(same, same));
-  eq("無變更 → 無 hunk", hunks.length, 0);
+  eq("no change -> no hunk", hunks.length, 0);
 }
 {
   const left = ["b", "c"];
   const right = ["a", "b", "c"];
   const { hunks, changedRightLines } = buildHunks(left, right, diffLines(left, right));
-  eq("開頭插入 rightStart=1", hunks[0]?.rightStart, 1);
-  eq("開頭插入 leftStart=1", hunks[0]?.leftStart, 1);
-  eq("開頭插入變更行=1", [...changedRightLines], [1]);
+  eq("insert at top: rightStart=1", hunks[0]?.rightStart, 1);
+  eq("insert at top: leftStart=1", hunks[0]?.leftStart, 1);
+  eq("insert at top: changed line = 1", [...changedRightLines], [1]);
 }
 {
   // Scattered edits in a long file: this is where an off-by-one in hunk headers would
@@ -102,8 +102,8 @@ section("diff 與 hunk 行號");
   bigRight.splice(100, 0, "INSERTED();");
   bigRight[180] = "CHANGED181();";
   const { hunks, changedRightLines } = buildHunks(bigLeft, bigRight, diffLines(bigLeft, bigRight));
-  eq("三處分散變更 → 3 個 hunk", hunks.length, 3);
-  eq("變更行號正確", [...changedRightLines].sort((a, b) => a - b), [10, 101, 181]);
+  eq("three scattered edits -> 3 hunks", hunks.length, 3);
+  eq("changed line numbers correct", [...changedRightLines].sort((a, b) => a - b), [10, 101, 181]);
   // The strongest assertion available: a hunk's declared span must match the real file.
   for (const h of hunks) {
     const bodyRight = h.body
@@ -112,7 +112,7 @@ section("diff 與 hunk 行號");
       .map((l) => l.slice(1));
     const actual = bigRight.slice(h.rightStart - 1, h.rightStart - 1 + h.rightCount);
     check(
-      `hunk@${h.rightStart} 宣告的行範圍與檔案實際內容一致`,
+      `hunk@${h.rightStart} declared range matches actual file content`,
       JSON.stringify(bodyRight) === JSON.stringify(actual),
     );
   }
@@ -121,12 +121,12 @@ section("diff 與 hunk 行號");
   const left = ["a", "b"];
   const right = ["a", "B", "c"];
   const rendered = renderUnifiedDiff("/f.ts", buildHunks(left, right, diffLines(left, right)).hunks);
-  check("unified diff 含 @@ 標頭", rendered.includes("@@ -"));
-  check("unified diff 含 +/- 行", rendered.includes("+B") && rendered.includes("-b"));
+  check("unified diff has @@ header", rendered.includes("@@ -"));
+  check("unified diff has +/- lines", rendered.includes("+B") && rendered.includes("-b"));
 }
 
 // --- anchoring ---
-section("quote 定位（核心）");
+section("quote anchoring (core)");
 
 function mkFile(path: string, rightLines: string[], changed: number[]): FileDiff {
   const leftLines = rightLines.filter((_, i) => !changed.includes(i + 1));
@@ -166,22 +166,22 @@ function mkFinding(over: Partial<RawFinding>): RawFinding {
     "}",
   ], [3]);
   const r = anchorFinding(mkFinding({ quote: "  return x / divisor;" }), [f]);
-  eq("精確 quote → 第 3 行", r.anchor?.startLine, 3);
-  eq("錨定在右側", r.anchor?.side, "right");
-  eq("startOffset 為 1", r.anchor?.startOffset, 1);
-  check("endOffset 覆蓋整行", (r.anchor?.endOffset ?? 0) > 1);
+  eq("exact quote -> line 3", r.anchor?.startLine, 3);
+  eq("anchored on right side", r.anchor?.side, "right");
+  eq("startOffset is 1", r.anchor?.startOffset, 1);
+  check("endOffset covers the whole line", (r.anchor?.endOffset ?? 0) > 1);
 }
 {
   // The model reformatted the indentation — tier-2 matching must still find it.
   const f = mkFile("/src/app.ts", ["function run() {", "    const x = compute();", "}"], [2]);
   const r = anchorFinding(mkFinding({ quote: "const x = compute();" }), [f]);
-  eq("縮排不同仍可定位", r.anchor?.startLine, 2);
+  eq("different indentation still locates", r.anchor?.startLine, 2);
 }
 {
   const f = mkFile("/src/app.ts", ["a();", "b();", "a();"], [1, 2, 3]);
   const r = anchorFinding(mkFinding({ quote: "a();" }), [f]);
-  eq("重複 quote 且無 context → 判定歧義", r.failure, "quote-ambiguous");
-  check("歧義時不回傳 anchor（不猜行號）", r.anchor === undefined);
+  eq("duplicate quote, no context -> ambiguous verdict", r.failure, "quote-ambiguous");
+  check("ambiguous returns no anchor (never guess a line)", r.anchor === undefined);
 }
 {
   const f = mkFile("/src/app.ts", ["a();", "b();", "a();", "c();"], [1, 2, 3, 4]);
@@ -189,22 +189,22 @@ function mkFinding(over: Partial<RawFinding>): RawFinding {
     mkFinding({ quote: "a();", context_after: "c();" }),
     [f],
   );
-  eq("context_after 消歧 → 第 3 行", r.anchor?.startLine, 3);
+  eq("context_after disambiguates -> line 3", r.anchor?.startLine, 3);
 }
 {
   const f = mkFile("/src/app.ts", ["a();", "b();", "a();", "c();"], [1, 2, 3, 4]);
   const r = anchorFinding(mkFinding({ quote: "a();", context_before: "b();" }), [f]);
-  eq("context_before 消歧 → 第 3 行", r.anchor?.startLine, 3);
+  eq("context_before disambiguates -> line 3", r.anchor?.startLine, 3);
 }
 {
   const f = mkFile("/src/app.ts", ["one();", "two();"], [1]);
   const r = anchorFinding(mkFinding({ quote: "nonexistent();" }), [f]);
-  eq("找不到 quote → fail-closed", r.failure, "quote-not-found");
+  eq("quote not found -> fail-closed", r.failure, "quote-not-found");
 }
 {
   const f = mkFile("/src/app.ts", ["a();"], [1]);
   const r = anchorFinding(mkFinding({ file: "/other/file.ts", quote: "a();" }), [f]);
-  eq("檔案不在 diff 中", r.failure, "file-not-in-diff");
+  eq("file not in diff", r.failure, "file-not-in-diff");
 }
 {
   // A finding about untouched code far from any hunk is not this PR's business.
@@ -225,30 +225,30 @@ function mkFinding(over: Partial<RawFinding>): RawFinding {
     language: "typescript",
   };
   const r = anchorFinding(mkFinding({ quote: "line50();" }), [f]);
-  eq("變更範圍外 → 拒絕", r.failure, "outside-changed-lines");
+  eq("outside changed region -> rejected", r.failure, "outside-changed-lines");
 }
 {
   const f = mkFile("/src/app.ts", ["if (a) {", "  doThing();", "}"], [1, 2, 3]);
   const r = anchorFinding(mkFinding({ quote: "if (a) {\n  doThing();" }), [f]);
-  eq("多行 quote 起始行", r.anchor?.startLine, 1);
-  eq("多行 quote 結束行", r.anchor?.endLine, 2);
+  eq("multi-line quote start line", r.anchor?.startLine, 1);
+  eq("multi-line quote end line", r.anchor?.endLine, 2);
 }
 {
   // CRLF content vs a quote the model echoed without the \r.
   const f = mkFile("/src/app.ts", ["a();\r", "target();\r", "b();\r"], [2]);
   const r = anchorFinding(mkFinding({ quote: "target();" }), [f]);
-  eq("CRLF 檔案仍可定位", r.anchor?.startLine, 2);
+  eq("CRLF file still locates", r.anchor?.startLine, 2);
 }
 {
   const f = mkFile("/src/deep/nested/app.ts", ["x();"], [1]);
-  check("路徑後綴匹配", resolveFile("deep/nested/app.ts", [f])?.path === "/src/deep/nested/app.ts");
-  check("basename 匹配", resolveFile("app.ts", [f])?.path === "/src/deep/nested/app.ts");
-  check("不存在的檔案回傳 undefined", resolveFile("nope.ts", [f]) === undefined);
+  check("path suffix match", resolveFile("deep/nested/app.ts", [f])?.path === "/src/deep/nested/app.ts");
+  check("basename match", resolveFile("app.ts", [f])?.path === "/src/deep/nested/app.ts");
+  check("missing file returns undefined", resolveFile("nope.ts", [f]) === undefined);
 }
 {
   const a = mkFile("/src/a.ts", ["x();"], [1]);
   const b = mkFile("/lib/a.ts", ["x();"], [1]);
-  check("同名檔案有歧義時不亂猜", resolveFile("a.ts", [a, b]) === undefined);
+  check("same-name files are ambiguous, no guessing", resolveFile("a.ts", [a, b]) === undefined);
 }
 {
   // The scenario that motivated the whole project: an identical line exists both in
@@ -272,11 +272,11 @@ function mkFinding(over: Partial<RawFinding>): RawFinding {
     mkFinding({ file: "/src/m.py", quote: "    return 1", context_before: "def main():" }),
     [f],
   );
-  eq("重複行優先錨定在變更處（第 7 行而非第 4 行）", r.anchor?.startLine, 7);
+  eq("duplicate line anchors to the change (line 7, not line 4)", r.anchor?.startLine, 7);
 }
 
 // --- URL parsing ---
-section("PR URL 解析");
+section("PR URL parsing");
 {
   const r = parsePrUrl("https://dev.azure.com/myorg/MyProject/_git/my-repo/pullrequest/1234");
   eq("org", r.org, "myorg");
@@ -286,42 +286,42 @@ section("PR URL 解析");
 }
 {
   const r = parsePrUrl("https://dev.azure.com/org/Proj%20With%20Space/_git/repo/pullrequest/7");
-  eq("URL-encoded project 名稱", r.project, "Proj With Space");
+  eq("URL-encoded project name", r.project, "Proj With Space");
 }
 {
   // The API base must come from the URL, not be rebuilt from a configured host — that is
   // what broke on-prem: the virtual directory was dropped and the collection was mistaken
   // for the org, producing a request to an entirely different server.
   const cloud = parsePrUrl("https://dev.azure.com/myorg/MyProject/_git/my-repo/pullrequest/1234");
-  eq("雲端 API base", cloud.baseUrl, "https://dev.azure.com/myorg");
+  eq("cloud API base", cloud.baseUrl, "https://dev.azure.com/myorg");
 
   const onpremPrefix = parsePrUrl(
     "https://tfs.corp.local/tfs/DefaultCollection/MyProject/_git/my-repo/pullrequest/42",
   );
-  eq("on-prem 含虛擬目錄：API base 保留 /tfs", onpremPrefix.baseUrl, "https://tfs.corp.local/tfs/DefaultCollection");
-  eq("on-prem 含虛擬目錄：collection", onpremPrefix.org, "DefaultCollection");
-  eq("on-prem 含虛擬目錄：project", onpremPrefix.project, "MyProject");
-  eq("on-prem 含虛擬目錄：repo", onpremPrefix.repoId, "my-repo");
-  eq("on-prem 含虛擬目錄：PR id", onpremPrefix.prId, 42);
+  eq("on-prem with virtual dir: API base keeps /tfs", onpremPrefix.baseUrl, "https://tfs.corp.local/tfs/DefaultCollection");
+  eq("on-prem with virtual dir: collection", onpremPrefix.org, "DefaultCollection");
+  eq("on-prem with virtual dir: project", onpremPrefix.project, "MyProject");
+  eq("on-prem with virtual dir: repo", onpremPrefix.repoId, "my-repo");
+  eq("on-prem with virtual dir: PR id", onpremPrefix.prId, 42);
 
   const onpremPlain = parsePrUrl("https://ado.corp.local/DefaultCollection/Proj/_git/repo/pullrequest/9");
-  eq("on-prem 無虛擬目錄", onpremPlain.baseUrl, "https://ado.corp.local/DefaultCollection");
+  eq("on-prem without virtual dir", onpremPlain.baseUrl, "https://ado.corp.local/DefaultCollection");
 
   const onpremDeep = parsePrUrl("https://srv.corp.local/tfs/apps/TeamCollection/Proj/_git/repo/pullrequest/3");
-  eq("on-prem 多層虛擬目錄", onpremDeep.baseUrl, "https://srv.corp.local/tfs/apps/TeamCollection");
+  eq("on-prem nested virtual dirs", onpremDeep.baseUrl, "https://srv.corp.local/tfs/apps/TeamCollection");
 
   const port = parsePrUrl("https://tfs.corp.local:8443/tfs/Coll/Proj/_git/repo/pullrequest/5");
-  eq("on-prem 自訂連接埠保留", port.baseUrl, "https://tfs.corp.local:8443/tfs/Coll");
+  eq("on-prem custom port kept", port.baseUrl, "https://tfs.corp.local:8443/tfs/Coll");
 
   const vsts = parsePrUrl("https://myorg.visualstudio.com/MyProject/_git/repo/pullrequest/8");
-  eq("visualstudio.com：collection 在主機名，路徑為空", vsts.baseUrl, "https://myorg.visualstudio.com");
-  eq("visualstudio.com：project", vsts.project, "MyProject");
+  eq("visualstudio.com: collection in hostname, empty path", vsts.baseUrl, "https://myorg.visualstudio.com");
+  eq("visualstudio.com: project", vsts.project, "MyProject");
 }
 {
   // The composed REST path is what actually gets requested; assert it end to end.
   const r = parsePrUrl("https://tfs.corp.local/tfs/DefaultCollection/MyProject/_git/my-repo/pullrequest/42");
   eq(
-    "on-prem 組出的 PR API 位址",
+    "on-prem composed PR API URL",
     prBase(r),
     "https://tfs.corp.local/tfs/DefaultCollection/MyProject/_apis/git/repositories/my-repo/pullRequests/42",
   );
@@ -333,56 +333,56 @@ section("PR URL 解析");
   } catch {
     threw = true;
   }
-  check("缺少 pullrequest 區段時報錯", threw);
+  check("missing pullrequest segment throws", threw);
 }
 
 // --- JSON parsing ---
-section("模型輸出解析（fail-closed）");
+section("model output parsing (fail-closed)");
 {
   const r = parseJsonObject<{ findings: unknown[] }>('{"findings":[]}');
-  check("純 JSON", r.ok && Array.isArray(r.value.findings));
+  check("plain JSON", r.ok && Array.isArray(r.value.findings));
 }
 {
   const r = parseJsonObject<{ a: number }>('```json\n{"a":1}\n```');
   check("markdown fence", r.ok && r.value.a === 1);
 }
 {
-  const r = parseJsonObject<{ a: number }>('<think>推理中</think>\n{"a":2}');
-  check("think block 前綴", r.ok && r.value.a === 2);
+  const r = parseJsonObject<{ a: number }>('<think>reasoning</think>\n{"a":2}');
+  check("think block prefix", r.ok && r.value.a === 2);
 }
 {
-  const r = parseJsonObject<{ a: string }>('說明文字\n{"a":"含 } 括號"}\n結尾');
-  check("字串內的括號不影響平衡判斷", r.ok && r.value.a === "含 } 括號");
+  const r = parseJsonObject<{ a: string }>('some prose\n{"a":"has } brace"}\ntrailer');
+  check("braces inside strings do not break balancing", r.ok && r.value.a === "has } brace");
 }
 {
-  const r = parseJsonObject("完全不是 JSON");
-  check("非 JSON → 失敗而非丟例外", !r.ok);
+  const r = parseJsonObject("not JSON at all");
+  check("non-JSON -> failure, not a throw", !r.ok);
 }
 {
   const r = parseJsonObject("");
-  check("空字串 → 失敗", !r.ok);
+  check("empty string -> failure", !r.ok);
 }
 
 // --- language / noise ---
-section("語言判定與雜訊過濾");
+section("language detection and noise filtering");
 eq("python", detectLanguage("/src/a.py"), "python");
 eq("java", detectLanguage("/src/A.java"), "java");
 eq("tsx", detectLanguage("/app/page.tsx"), "tsx");
-check("lockfile 是雜訊", isNoiseFile("/package-lock.json"));
-check(".next 產出是雜訊", isNoiseFile("/apps/web/.next/static/x.js"));
-check("一般 ts 可審查", isReviewable("/src/a.ts"));
-check("markdown 不進 review", !isReviewable("/README.md"));
+check("lockfile is noise", isNoiseFile("/package-lock.json"));
+check(".next output is noise", isNoiseFile("/apps/web/.next/static/x.js"));
+check("ordinary ts is reviewable", isReviewable("/src/a.ts"));
+check("markdown is not reviewed", !isReviewable("/README.md"));
 
 // --- payload budget ---
-section("diff 預算");
+section("diff budget");
 {
   const files = [
     mkFile("/a.ts", ["a1();", "a2();"], [1, 2]),
     mkFile("/b.py", ["b1()", "b2()"], [1, 2]),
   ];
   const p = buildDiffPayload(files, 100_000);
-  eq("預算充足時全部納入", p.includedFiles.length, 2);
-  check("payload 含檔名", p.text.includes("/a.ts") && p.text.includes("/b.py"));
+  eq("budget is enough, everything included", p.includedFiles.length, 2);
+  check("payload contains filenames", p.text.includes("/a.ts") && p.text.includes("/b.py"));
 }
 {
   const files = [
@@ -390,34 +390,34 @@ section("diff 預算");
     mkFile("/b.ts", ["b1();"], [1]),
   ];
   const p = buildDiffPayload(files, 200);
-  check("超出預算時至少保留一個檔案", p.includedFiles.length >= 1);
-  check("被略過的檔案有記錄", p.includedFiles.length + p.omittedFiles.length === 2);
-  if (p.omittedFiles.length > 0) check("略過清單出現在 payload 中", p.text.includes("未納入"));
+  check("over budget still keeps at least one file", p.includedFiles.length >= 1);
+  check("skipped files are recorded", p.includedFiles.length + p.omittedFiles.length === 2);
+  if (p.omittedFiles.length > 0) check("skip list appears in payload", p.text.includes("omitted"));
 }
 
 // --- work item HTML ---
-section("Work Item HTML 轉純文字");
-eq("<li> 變成條列", htmlToText("<ul><li>條件一</li><li>條件二</li></ul>"), "- 條件一\n- 條件二");
-eq("<br> 換行", htmlToText("a<br/>b"), "a\nb");
-eq("實體字元還原", htmlToText("&lt;tag&gt; &amp; &quot;q&quot;&nbsp;x"), '<tag> & "q" x');
-eq("數字實體", htmlToText("&#65;&#66;"), "AB");
-eq("script 被移除", htmlToText("<p>keep</p><script>evil()</script>"), "keep");
-eq("空輸入", htmlToText(undefined), "");
-check("<p> 分段", htmlToText("<p>one</p><p>two</p>").split("\n").length === 2);
+section("Work Item HTML to plain text");
+eq("<li> becomes a bullet", htmlToText("<ul><li>criterion one</li><li>criterion two</li></ul>"), "- criterion one\n- criterion two");
+eq("<br> is a newline", htmlToText("a<br/>b"), "a\nb");
+eq("entities decoded", htmlToText("&lt;tag&gt; &amp; &quot;q&quot;&nbsp;x"), '<tag> & "q" x');
+eq("numeric entities", htmlToText("&#65;&#66;"), "AB");
+eq("script removed", htmlToText("<p>keep</p><script>evil()</script>"), "keep");
+eq("empty input", htmlToText(undefined), "");
+check("<p> splits paragraphs", htmlToText("<p>one</p><p>two</p>").split("\n").length === 2);
 
 // --- rule globs ---
-section("規則 glob 比對");
-check("** 匹配任意深度", globToRegExp("**/*.py").test("src/a/b/c.py"));
-check("**/ 可匹配零層目錄", globToRegExp("**/*.py").test("c.py"));
-check("副檔名不符不匹配", !globToRegExp("**/*.py").test("src/a.java"));
-check("{a,b} 分支", globToRegExp("**/*.{tsx,jsx}").test("app/page.tsx"));
-check("{a,b} 另一分支", globToRegExp("**/*.{tsx,jsx}").test("app/page.jsx"));
-check("{a,b} 不匹配第三者", !globToRegExp("**/*.{tsx,jsx}").test("app/page.ts"));
-check("* 不跨目錄", !globToRegExp("src/*.ts").test("src/deep/a.ts"));
-check("目錄前綴", globToRegExp("services/payment/**").test("services/payment/api/x.java"));
-check("全域 **/*", globToRegExp("**/*").test("anything/at/all.md"));
+section("rule glob matching");
+check("** matches any depth", globToRegExp("**/*.py").test("src/a/b/c.py"));
+check("**/ matches zero directories", globToRegExp("**/*.py").test("c.py"));
+check("wrong extension does not match", !globToRegExp("**/*.py").test("src/a.java"));
+check("{a,b} branch", globToRegExp("**/*.{tsx,jsx}").test("app/page.tsx"));
+check("{a,b} other branch", globToRegExp("**/*.{tsx,jsx}").test("app/page.jsx"));
+check("{a,b} rejects a third option", !globToRegExp("**/*.{tsx,jsx}").test("app/page.ts"));
+check("* does not cross directories", !globToRegExp("src/*.ts").test("src/deep/a.ts"));
+check("directory prefix", globToRegExp("services/payment/**").test("services/payment/api/x.java"));
+check("global **/*", globToRegExp("**/*").test("anything/at/all.md"));
 
-section("規則選取");
+section("rule selection");
 {
   const rules = [
     { name: "_base.md", applyTo: ["**/*"], body: "base" },
@@ -425,48 +425,48 @@ section("規則選取");
     { name: "python.md", applyTo: ["**/*.py"], body: "python" },
   ];
   const picked = selectRules(rules, ["/src/Main.java", "/README.md"]);
-  eq("只載入相關語言規則", picked.map((r) => r.name).sort(), ["_base.md", "java.md"]);
-  check("未變更的語言規則不載入", !picked.some((r) => r.name === "python.md"));
+  eq("loads only relevant language rules", picked.map((r) => r.name).sort(), ["_base.md", "java.md"]);
+  check("unchanged language rules not loaded", !picked.some((r) => r.name === "python.md"));
   const none = selectRules(rules, []);
-  eq("無變更檔案時不載入任何規則", none.length, 0);
+  eq("no changed files -> no rules loaded", none.length, 0);
 }
 {
   // The shipped baseline must actually parse and apply everywhere.
   const base = loadRules().find((r) => r.name === "_base.md");
-  check("內建 _base.md 可載入", base !== undefined);
+  check("built-in _base.md loads", base !== undefined);
   if (base) {
-    eq("_base.md applyTo 為全域", base.applyTo, ["**/*"]);
-    check("_base.md 內容含 Fowler smells", base.body.includes("Feature Envy"));
-    check("_base.md frontmatter 已剝除", !base.body.startsWith("---"));
+    eq("_base.md applyTo is global", base.applyTo, ["**/*"]);
+    check("_base.md body has Fowler smells", base.body.includes("Feature Envy"));
+    check("_base.md frontmatter stripped", !base.body.startsWith("---"));
   }
 }
 
 // --- adversarial verification ---
-section("Skeptic 判定解析（fail-open）");
+section("skeptic verdict parsing (fail-open)");
 {
-  const v = parseVerdictForTest('{"refuted":true,"reason":"這段是 try-with-resources，會自動關閉","confidence":0.9}', "test-model");
-  check("明確推翻", v.refuted && v.confidence === 0.9);
+  const v = parseVerdictForTest('{"refuted":true,"reason":"this is try-with-resources, it closes automatically","confidence":0.9}', "test-model");
+  check("explicit refutation", v.refuted && v.confidence === 0.9);
 }
 {
   const v = parseVerdictForTest('{"refuted":false,"reason":"","confidence":0.7}', "test-model");
-  check("未推翻", !v.refuted);
+  check("not refuted", !v.refuted);
 }
 {
   // A broken verifier must not be able to delete findings.
-  const v = parseVerdictForTest("模型壞掉了不是 JSON", "test-model");
-  check("無法解析時 fail-open（不推翻）", !v.refuted);
-  check("無法解析時記錄錯誤", v.error !== undefined);
+  const v = parseVerdictForTest("model broke, this is not JSON", "test-model");
+  check("unparseable -> fail-open (not refuted)", !v.refuted);
+  check("unparseable records the error", v.error !== undefined);
 }
 {
-  const v = parseVerdictForTest('{"refuted":false,"reason":"影響被誇大","confidence":0.8,"suggested_severity":"low"}', "test-model");
-  eq("接受嚴重度下修建議", v.suggestedSeverity, "low");
+  const v = parseVerdictForTest('{"refuted":false,"reason":"impact overstated","confidence":0.8,"suggested_severity":"low"}', "test-model");
+  eq("accepts severity downgrade suggestion", v.suggestedSeverity, "low");
 }
 {
   const v = parseVerdictForTest('{"refuted":false,"reason":"x","confidence":0.5,"suggested_severity":"catastrophic"}', "test-model");
-  check("無效的嚴重度被忽略", v.suggestedSeverity === undefined);
+  check("invalid severity ignored", v.suggestedSeverity === undefined);
 }
 
-section("共識裁決");
+section("consensus adjudication");
 {
   const mk = (over: Partial<AnchoredFinding>): AnchoredFinding => ({
     category: "correctness",
@@ -483,23 +483,23 @@ section("共識裁決");
   const empty = { merged: [], degraded: [], rawCount: 0, byFailure: {} };
 
   const single = finalize(empty, [mk({ sources: ["m1"] })]);
-  eq("單一模型且未驗證 → 不發 inline", single.inline.length, 0);
-  eq("但仍列於 summary", single.belowBar.length, 1);
-  eq("並標明原因", single.belowBar[0]?.suppressedBy, "no-corroboration");
+  eq("single model, unverified -> no inline comment", single.inline.length, 0);
+  eq("still listed in summary", single.belowBar.length, 1);
+  eq("reason recorded", single.belowBar[0]?.suppressedBy, "no-corroboration");
 
   const twoModels = finalize(empty, [mk({ sources: ["m1", "m2"] })]);
-  eq("兩個模型獨立發現 → 發 inline", twoModels.inline.length, 1);
+  eq("two models found it independently -> inline", twoModels.inline.length, 1);
 
   const verified = finalize(empty, [mk({ sources: ["m1"], skepticVerdicts: 1 })]);
-  eq("單一模型但通過對抗驗證 → 發 inline", verified.inline.length, 1);
+  eq("single model but passed adversarial verification -> inline", verified.inline.length, 1);
 
   const lowSev = finalize(empty, [mk({ sources: ["m1", "m2"], severity: "low" })]);
-  eq("低於門檻 → 不發 inline", lowSev.inline.length, 0);
-  eq("原因標為 severity", lowSev.belowBar[0]?.suppressedBy, "severity");
+  eq("below threshold -> no inline", lowSev.inline.length, 0);
+  eq("reason is severity", lowSev.belowBar[0]?.suppressedBy, "severity");
 }
 
 // --- static analysis ---
-section("工具輸出解析");
+section("tool output parsing");
 const spec = (format: string): ToolSpec =>
   ({ name: "t", bin: "t", args: () => [], format, tier: "triage" }) as ToolSpec;
 
@@ -517,10 +517,10 @@ const spec = (format: string): ToolSpec =>
     }],
   });
   const f = parseToolOutput(sarif, spec("sarif"), "/w")[0];
-  eq("SARIF 規則 id", f?.ruleId, "B602");
-  eq("SARIF 行號", f?.line, 12);
+  eq("SARIF rule id", f?.ruleId, "B602");
+  eq("SARIF line number", f?.line, 12);
   // A rule can be level:note while describing a critical vulnerability.
-  eq("security-severity 覆蓋 level", f?.severity, "critical");
+  eq("security-severity overrides level", f?.severity, "critical");
   eq("SARIF helpUri", f?.helpUri, "https://x");
 }
 {
@@ -529,51 +529,51 @@ const spec = (format: string): ToolSpec =>
     { code: "S602", message: "shell", filename: "/w/src/a.py", location: { row: 9 } },
   ]);
   const fs2 = parseToolOutput(ruff, spec("ruff-json"), "/w");
-  eq("ruff 兩筆", fs2.length, 2);
-  eq("workdir 前綴被剝除", fs2[0]?.file, "src/a.py");
-  eq("S 前綴視為安全類（高）", fs2[1]?.severity, "high");
+  eq("ruff two entries", fs2.length, 2);
+  eq("workdir prefix stripped", fs2[0]?.file, "src/a.py");
+  eq("S prefix treated as security (high)", fs2[1]?.severity, "high");
 }
 {
   const eslint = JSON.stringify([
     { filePath: "/w/app/p.tsx", messages: [{ ruleId: "no-eval", severity: 2, message: "eval", line: 4 }] },
   ]);
   const f = parseToolOutput(eslint, spec("eslint-json"), "/w")[0];
-  eq("eslint 規則", f?.ruleId, "no-eval");
-  eq("eslint severity 2 → high", f?.severity, "high");
+  eq("eslint rule", f?.ruleId, "no-eval");
+  eq("eslint severity 2 -> high", f?.severity, "high");
 }
 {
   const xml = `<?xml version="1.0"?><checkstyle><file name="/w/src/A.java">` +
     `<error line="7" severity="error" message="Avoid &quot;x&quot; here" source="com.puppycrawl.tools.checkstyle.MagicNumberCheck"/>` +
     `</file></checkstyle>`;
   const f = parseToolOutput(xml, spec("checkstyle-xml"), "/w")[0];
-  eq("checkstyle 行號", f?.line, 7);
-  eq("規則取最後一段", f?.ruleId, "MagicNumberCheck");
-  check("XML 實體已解碼", (f?.message ?? "").includes('"x"'));
+  eq("checkstyle line number", f?.line, 7);
+  eq("rule id is the last segment", f?.ruleId, "MagicNumberCheck");
+  check("XML entities decoded", (f?.message ?? "").includes('"x"'));
 }
 {
   // &amp; must be decoded LAST, or "&amp;lt;" wrongly becomes "<" instead of "&lt;".
   const xml = `<?xml version="1.0"?><checkstyle><file name="/w/A.java">` +
     `<error line="1" severity="error" message="a &amp;lt; b" source="X"/></file></checkstyle>`;
   const f = parseToolOutput(xml, spec("checkstyle-xml"), "/w")[0];
-  eq("&amp; 最後解碼，不會二次還原", f?.message, "a &lt; b");
+  eq("&amp; decoded last, no double decoding", f?.message, "a &lt; b");
 }
 {
   const mypy = '{"file":"src/a.py","line":5,"severity":"error","message":"bad type","code":"arg-type"}\n' +
                '{"file":"src/a.py","line":6,"severity":"note","message":"context"}';
   const fs3 = parseToolOutput(mypy, spec("mypy-json"), "/w");
-  eq("mypy 只保留 error", fs3.length, 1);
-  eq("mypy 型別錯誤視為高", fs3[0]?.severity, "high");
+  eq("mypy keeps only error", fs3.length, 1);
+  eq("mypy type error treated as high", fs3[0]?.severity, "high");
 }
 {
   const tsc = "src/a.ts(12,5): error TS2345: Argument of type 'x'.\nirrelevant line";
   const f = parseToolOutput(tsc, spec("tsc-text"), "/w")[0];
-  eq("tsc 規則", f?.ruleId, "TS2345");
-  eq("tsc 行號", f?.line, 12);
+  eq("tsc rule", f?.ruleId, "TS2345");
+  eq("tsc line number", f?.line, 12);
 }
-check("空輸出不炸", parseToolOutput("", spec("sarif"), "/w").length === 0);
-check("壞掉的輸出不炸", parseToolOutput("{{{not json", spec("sarif"), "/w").length === 0);
+check("empty output does not blow up", parseToolOutput("", spec("sarif"), "/w").length === 0);
+check("broken output does not blow up", parseToolOutput("{{{not json", spec("sarif"), "/w").length === 0);
 
-section("靜態 findings 的 diff 過濾");
+section("diff filtering of static findings");
 {
   const f = mkFile("/src/a.py", ["a()", "b()", "c()"], [2]);
   const mk = (line: number) => ({
@@ -581,30 +581,30 @@ section("靜態 findings 的 diff 過濾");
     file: "src/a.py", line, severity: "medium" as const,
   });
   const r = filterToChangedLines([mk(1), mk(2), mk(3)], [f]);
-  eq("只保留落在變更行上的", r.kept.length, 1);
-  eq("保留的是第 2 行", r.kept[0]?.line, 2);
-  eq("其餘被濾除", r.dropped, 2);
+  eq("keeps only findings on changed lines", r.kept.length, 1);
+  eq("the kept one is line 2", r.kept[0]?.line, 2);
+  eq("the rest are dropped", r.dropped, 2);
 
   const other = filterToChangedLines([{ ...mk(2), file: "other/z.py" }], [f]);
-  eq("不在變更檔案中的一律濾除", other.kept.length, 0);
+  eq("files outside the diff are always dropped", other.kept.length, 0);
 }
 
-section("語言 profile 選取");
+section("language profile selection");
 {
   const ps = selectProfiles(["src/a.py", "README.md"]);
-  eq("只選到 python", ps.map((p) => p.language), ["python"]);
-  eq("非該語言的檔案不傳給工具", filesForProfile(ps[0]!, ["src/a.py", "README.md"]), ["src/a.py"]);
-  eq("混合語言選到兩個 profile", selectProfiles(["A.java", "p.tsx"]).length, 2);
-  eq("無對應語言時為空", selectProfiles(["README.md"]).length, 0);
+  eq("only python selected", ps.map((p) => p.language), ["python"]);
+  eq("files of other languages are not passed to the tool", filesForProfile(ps[0]!, ["src/a.py", "README.md"]), ["src/a.py"]);
+  eq("mixed languages select two profiles", selectProfiles(["A.java", "p.tsx"]).length, 2);
+  eq("no matching language -> empty", selectProfiles(["README.md"]).length, 0);
 }
 
-section("留言生命週期");
+section("comment lifecycle");
 {
   const threads = [
     { id: 1, status: "closed", comments: [{ id: 1, content: `<!-- prloop --><!-- prloop:summary -->x\n${iterationMarker(7)}` }] },
   ];
-  eq("從 summary 讀回上次審查的 iteration", lastReviewedIteration(threads), 7);
-  eq("沒有標記時回傳 undefined", lastReviewedIteration([{ id: 2, comments: [{ id: 1, content: "路人留言" }] }]), undefined);
+  eq("reads last reviewed iteration from summary", lastReviewedIteration(threads), 7);
+  eq("no marker -> undefined", lastReviewedIteration([{ id: 2, comments: [{ id: 1, content: "unrelated comment" }] }]), undefined);
 }
 {
   const f = mkFile("/src/a.ts", ["x();", "y();"], [1]);
@@ -613,30 +613,30 @@ section("留言生命週期");
     comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=abc123 -->issue" }],
     threadContext: { filePath: "/src/a.ts", rightFileStart: { line, offset: 1 } },
   });
-  eq("行號超出檔案 → 判定為過時", findStaleThreads([ours(99, "active")], [f]).length, 1);
-  eq("行號仍在範圍內 → 不動它", findStaleThreads([ours(1, "active")], [f]).length, 0);
-  eq("已關閉的 thread 不再處理", findStaleThreads([ours(99, "fixed")], [f]).length, 0);
+  eq("line past end of file -> stale", findStaleThreads([ours(99, "active")], [f]).length, 1);
+  eq("line still in range -> leave it alone", findStaleThreads([ours(1, "active")], [f]).length, 0);
+  eq("closed thread is skipped", findStaleThreads([ours(99, "fixed")], [f]).length, 0);
   // Someone else's comment must never be touched.
-  const foreign = { id: 5, status: "active", comments: [{ id: 1, content: "同事的留言" }],
+  const foreign = { id: 5, status: "active", comments: [{ id: 1, content: "a teammate's comment" }],
     threadContext: { filePath: "/src/a.ts", rightFileStart: { line: 99, offset: 1 } } };
-  eq("非本工具的留言不處理", findStaleThreads([foreign], [f]).length, 0);
+  eq("comments not from this tool are skipped", findStaleThreads([foreign], [f]).length, 0);
 }
 {
   const dismissed = [
-    { id: 1, status: "wontFix", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=deadbeef -->不修" }],
+    { id: 1, status: "wontFix", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=deadbeef -->won't fix" }],
       threadContext: { filePath: "/src/a.ts" } },
     { id: 2, status: "active", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=aaaa -->still open" }] },
   ];
   const d = collectDismissals(dismissed);
-  eq("只收集被標記不修的", d.length, 1);
-  eq("記錄指紋", d[0]?.fingerprint, "deadbeef");
+  eq("collects only wontFix threads", d.length, 1);
+  eq("records the fingerprint", d[0]?.fingerprint, "deadbeef");
 }
 
 // --- realistic seeded PR ---
 // Toy fixtures prove the algorithm runs; this proves it lands on the right line in code
 // that looks like real code. Every expectation below was verified against `grep -n` on the
 // actual repository these files came from.
-section("真實 PR 錨定（植入缺陷的靶場）");
+section("real PR anchoring (seeded-defect range)");
 {
   const seeded: FileDiff[] = SEEDED_FILES.map((f) => {
     const leftLines = splitLines(Buffer.from(f.base, "utf8"));
@@ -669,26 +669,26 @@ section("真實 PR 錨定（植入缺陷的靶場）");
       eq(e.name, r.anchor?.startLine, e.expect);
     } else {
       eq(e.name, r.failure, e.expect);
-      check(`${e.name}（不得回傳 anchor）`, r.anchor === undefined);
+      check(`${e.name} (must not return an anchor)`, r.anchor === undefined);
     }
   }
 }
 
-section("NO_PROXY 比對規則");
+section("NO_PROXY matching rules");
 {
   // Exercises the real matcher, not a copy of it — the second argument exists so this can
   // be tested without the module-level value captured at import.
   const no = (list: string, host: string) => bypassesProxy(host, list);
-  check("完全相同的主機命中", no("internal.corp", "internal.corp"));
-  check("子網域命中", no("corp", "ai.internal.corp"));
-  check("前置點的寫法命中", no(".corp", "ai.internal.corp"));
-  check("萬用字元前綴命中", no("*.corp", "ai.internal.corp"));
-  check("不相關的主機不命中", !no("internal.corp", "dev.azure.com"));
-  check("部分字串不應誤命中", !no("corp", "notcorp.com"));
-  check("單獨的 * 代表全部繞過", no("*", "anything.example"));
-  check("多筆逗號分隔", no("a.com, internal.corp ,b.com", "x.internal.corp"));
-  check("空的 NO_PROXY 不繞過", !no("", "dev.azure.com"));
-  check("大小寫不敏感", no("INTERNAL.CORP", "ai.Internal.Corp"));
+  check("exact host match", no("internal.corp", "internal.corp"));
+  check("subdomain match", no("corp", "ai.internal.corp"));
+  check("leading-dot form matches", no(".corp", "ai.internal.corp"));
+  check("wildcard prefix matches", no("*.corp", "ai.internal.corp"));
+  check("unrelated host does not match", !no("internal.corp", "dev.azure.com"));
+  check("partial string must not match", !no("corp", "notcorp.com"));
+  check("bare * bypasses everything", no("*", "anything.example"));
+  check("comma-separated list", no("a.com, internal.corp ,b.com", "x.internal.corp"));
+  check("empty NO_PROXY bypasses nothing", !no("", "dev.azure.com"));
+  check("case-insensitive", no("INTERNAL.CORP", "ai.Internal.Corp"));
 }
 {
   // .env cannot overwrite an existing environment variable, so on a machine that already
@@ -703,25 +703,25 @@ section("NO_PROXY 比對規則");
   };
   const order = ["PRR_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy"];
   eq(
-    "PRR_ 版本優先於 shell 的 HTTPS_PROXY",
+    "PRR_ variant wins over shell HTTPS_PROXY",
     pick({ PRR_HTTPS_PROXY: "http://a", HTTPS_PROXY: "http://b" }, ...order),
     "http://a",
   );
-  eq("沒有 PRR_ 時沿用慣用名稱", pick({ HTTPS_PROXY: "http://b" }, ...order), "http://b");
-  eq("小寫也會被讀到", pick({ https_proxy: "http://c" }, ...order), "http://c");
-  eq("全空時為空字串", pick({}, ...order), "");
+  eq("no PRR_ -> falls back to conventional name", pick({ HTTPS_PROXY: "http://b" }, ...order), "http://b");
+  eq("lowercase is also read", pick({ https_proxy: "http://c" }, ...order), "http://c");
+  eq("all empty -> empty string", pick({}, ...order), "");
 }
-section("proxy 顯示遮蔽");
+section("proxy display redaction");
 {
   // Normalising through URL() drops a default port, which reads as lost configuration.
-  eq("預設埠必須保留", redactProxy("http://192.0.2.10:80"), "http://192.0.2.10:80");
-  eq("非預設埠保留", redactProxy("http://192.0.2.10:8080"), "http://192.0.2.10:8080");
-  eq("https 443 保留", redactProxy("https://p.corp:443"), "https://p.corp:443");
-  eq("不加多餘的斜線", redactProxy("http://p.corp"), "http://p.corp");
-  eq("密碼被遮蔽", redactProxy("http://user:secret@p.corp:80"), "http://user:***@p.corp:80");
-  eq("只有使用者名稱時也遮蔽", redactProxy("http://tok@p.corp:3128"), "http://tok:***@p.corp:3128");
-  check("原始密碼不會出現", !redactProxy("http://u:hunter2@p.corp").includes("hunter2"));
+  eq("default port must be kept", redactProxy("http://192.0.2.10:80"), "http://192.0.2.10:80");
+  eq("non-default port kept", redactProxy("http://192.0.2.10:8080"), "http://192.0.2.10:8080");
+  eq("https 443 kept", redactProxy("https://p.corp:443"), "https://p.corp:443");
+  eq("no extra trailing slash", redactProxy("http://p.corp"), "http://p.corp");
+  eq("password redacted", redactProxy("http://user:secret@p.corp:80"), "http://user:***@p.corp:80");
+  eq("username-only is redacted too", redactProxy("http://tok@p.corp:3128"), "http://tok:***@p.corp:3128");
+  check("raw password never appears", !redactProxy("http://u:hunter2@p.corp").includes("hunter2"));
 }
 
-console.log(`\n結果：${passed} 通過、${failed} 失敗`);
+console.log(`\nResult: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

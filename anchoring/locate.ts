@@ -127,19 +127,19 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
   if (!file) {
     return {
       failure: "file-not-in-diff",
-      detail: `檔案「${finding.file}」不在本次變更清單中`,
+      detail: `file "${finding.file}" is not in this change set`,
     };
   }
 
   const side: "right" | "left" = finding.side === "left" ? "left" : "right";
   const lines = side === "right" ? file.rightLines : file.leftLines;
   if (lines.length === 0) {
-    return { file, failure: "file-not-in-diff", detail: `檔案「${file.path}」${side} 側無可比對內容` };
+    return { file, failure: "file-not-in-diff", detail: `file "${file.path}" has no ${side}-side content to match against` };
   }
 
   const needle = quoteLines(finding.quote ?? "");
   if (needle.length === 0) {
-    return { file, failure: "quote-not-found", detail: "finding 未提供 quote" };
+    return { file, failure: "quote-not-found", detail: "finding carries no quote" };
   }
 
   const before = quoteLines(finding.context_before ?? "");
@@ -171,7 +171,7 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
       return {
         file,
         failure: "quote-ambiguous",
-        detail: `quote 在 ${file.path} 中出現 ${cands.length} 次，context 無法消歧`,
+        detail: `quote occurs ${cands.length} times in ${file.path}; context could not disambiguate`,
       };
     }
 
@@ -182,7 +182,7 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
       return {
         file,
         failure: "outside-changed-lines",
-        detail: `quote 定位到 ${file.path}:${cand.startLine}，不在本次變更範圍內`,
+        detail: `quote located at ${file.path}:${cand.startLine}, outside this change`,
       };
     }
 
@@ -205,6 +205,6 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
   return {
     file,
     failure: "quote-not-found",
-    detail: `在 ${file.path} 中找不到 quote：「${(finding.quote ?? "").slice(0, 80)}」`,
+    detail: `quote not found in ${file.path}: "${(finding.quote ?? "").slice(0, 80)}"`,
   };
 }

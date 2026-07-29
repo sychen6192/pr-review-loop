@@ -39,24 +39,24 @@ export function parsePrUrl(raw: string): PrRef {
   try {
     u = new URL(raw);
   } catch {
-    throw new AdoError(`無法解析 PR URL：${raw}`);
+    throw new AdoError(`Cannot parse PR URL: ${raw}`);
   }
   const segs = u.pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const gitIdx = segs.indexOf("_git");
   const prIdx = segs.findIndex((s) => s.toLowerCase() === "pullrequest");
   if (gitIdx < 0 || prIdx < 0 || prIdx !== gitIdx + 2) {
     throw new AdoError(
-      `PR URL 格式不符，預期 .../{project}/_git/{repo}/pullrequest/{id}，收到：${raw}`,
+      `Bad PR URL. Expected .../{project}/_git/{repo}/pullrequest/{id}, got: ${raw}`,
     );
   }
   const prId = Number(segs[prIdx + 1]);
   if (!Number.isInteger(prId) || prId <= 0) {
-    throw new AdoError(`PR URL 中的 PR id 無效：${segs[prIdx + 1]}`);
+    throw new AdoError(`Invalid PR id in PR URL: ${segs[prIdx + 1]}`);
   }
 
   const repoId = segs[gitIdx + 1]!;
   const project = segs[gitIdx - 1];
-  if (!project) throw new AdoError(`PR URL 缺少 project 區段：${raw}`);
+  if (!project) throw new AdoError(`PR URL is missing the project segment: ${raw}`);
 
   // Path segments before the project: the collection, plus any virtual directory on-prem.
   // Empty on {org}.visualstudio.com, where the org lives in the hostname.
@@ -129,7 +129,7 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
       // A PAT that lacks scope gets a 203 + sign-in HTML page rather than a 401.
       if (res.status === 203) {
         throw new AdoError(
-          "Azure DevOps 回傳 203（登入頁）：PAT 無效或缺少 scope（需要 Code Read & Write）",
+          "Azure DevOps returned 203 (sign-in page): PAT invalid or missing scope (needs Code Read & Write)",
           203,
         );
       }
@@ -137,7 +137,7 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
         const retryAfter = Number(res.headers.get("retry-after") ?? 0);
         if (attempt < ADO_MAX_RETRIES) {
           const waitMs = retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** (attempt - 1);
-          logVerbose(`ADO ${res.status}，${waitMs}ms 後重試（第 ${attempt}/${ADO_MAX_RETRIES} 次）`);
+          logVerbose(`ADO ${res.status}, retrying in ${waitMs}ms (attempt ${attempt}/${ADO_MAX_RETRIES})`);
           await new Promise((r) => setTimeout(r, waitMs));
           continue;
         }
@@ -145,7 +145,7 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new AdoError(
-          `ADO ${opts.method ?? "GET"} ${u.pathname} 失敗：${res.status} ${res.statusText}`,
+          `ADO ${opts.method ?? "GET"} ${u.pathname} failed: ${res.status} ${res.statusText}`,
           res.status,
           body.slice(0, 2000),
         );
@@ -160,12 +160,12 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
       }
       if (attempt >= ADO_MAX_RETRIES) break;
       const waitMs = 500 * 2 ** (attempt - 1);
-      logVerbose(`ADO 請求例外（${String(e)}），${waitMs}ms 後重試`);
+      logVerbose(`ADO request threw (${String(e)}), retrying in ${waitMs}ms`);
       await new Promise((r) => setTimeout(r, waitMs));
     }
   }
   if (lastErr instanceof AdoError) throw lastErr;
-  throw new AdoError(`連線 ${u.origin} 失敗：${diagnose(lastErr)}`);
+  throw new AdoError(`Connection to ${u.origin} failed: ${diagnose(lastErr)}`);
 }
 
 /**
@@ -179,32 +179,32 @@ function diagnose(e: unknown): string {
 
   if (/UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT|DEPTH_ZERO_SELF_SIGNED|unable to verify|self-signed/i.test(all)) {
     return (
-      `TLS 憑證無法驗證（${code || "cert"}）。內部 CA 簽發的憑證 Node 預設不信任。` +
-      `解法：export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem 後重跑`
+      `TLS certificate could not be verified (${code || "cert"}). Node does not trust internal CAs by default. ` +
+      `Fix: export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem and rerun`
     );
   }
   if (/ERR_TLS_CERT_ALTNAME_INVALID|Hostname\/IP does not match/i.test(all)) {
-    return "TLS 憑證的主機名稱與網址不符。確認 PR URL 用的主機名與憑證上的一致";
+    return "TLS certificate hostname does not match the URL. Use the hostname the certificate was issued for";
   }
   if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(all)) {
-    return "DNS 查不到這個主機。確認網址正確，且這台機器連得到內網（VPN？）";
+    return "DNS cannot resolve this host. Check the URL, and that this machine reaches the intranet (VPN?)";
   }
   if (/403/.test(all) && /proxy|CONNECT|tunnel/i.test(all)) {
     return (
-      "proxy 拒絕放行。若 git 對同一主機是通的，多半是 proxy 依 User-Agent 過濾——" +
-      `prloop 預設送出「${USER_AGENT}」，可用 PRR_USER_AGENT 調整`
+      "Proxy refused the request. If git reaches the same host, the proxy is likely filtering by User-Agent — " +
+      `prloop sends "${USER_AGENT}"; override with PRR_USER_AGENT`
     );
   }
   if (/ECONNREFUSED/i.test(all)) {
     return (
-      "連線被拒。若這台機器只能透過公司 proxy 對外，請確認 HTTPS_PROXY 已設定" +
-      "（prloop 會自動使用；Node 內建的 fetch 本身不會讀這個變數）"
+      "Connection refused. If this machine only reaches the internet through a corporate proxy, set HTTPS_PROXY " +
+      "(prloop uses it automatically; Node's built-in fetch does not read it)"
     );
   }
   if (/ETIMEDOUT|ECONNRESET|UND_ERR_CONNECT_TIMEOUT/i.test(all)) {
-    return "連線逾時。多半是防火牆或需要 proxy（設 HTTPS_PROXY 環境變數）";
+    return "Connection timeout. Usually a firewall, or a proxy is required (set HTTPS_PROXY)";
   }
-  if (/aborted|AbortError/i.test(all)) return `請求逾時（${ADO_TIMEOUT_MS}ms）。可調高 PRR_ADO_TIMEOUT_MS`;
+  if (/aborted|AbortError/i.test(all)) return `Request timeout (${ADO_TIMEOUT_MS}ms). Raise PRR_ADO_TIMEOUT_MS`;
   return msg;
 }
 

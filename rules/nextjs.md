@@ -2,65 +2,83 @@
 applyTo: "**/*.tsx", "**/*.jsx", "**/app/**", "**/pages/**"
 ---
 
-# React / Next.js 審查規則
+# React / Next.js review rules
 
-eslint（含 `react-hooks` 與 `@next/next`）與 `tsc` 已涵蓋的**不要重複回報**。
-以下是它們抓不到的。
+Anything already covered by eslint (including `react-hooks` and `@next/next`) and `tsc`
+**must not be reported again**. Below is what they cannot catch.
 
-## Server Action 安全性（最高優先）
+## Server Action security (highest priority)
 
-- **Server Action 必須自己重新驗證授權。** 這是最常見也最嚴重的錯誤：
-  Server Action 一旦被建立並匯出，**就可以被直接 POST 呼叫**，不必經過你的 UI。
-  page 層或 layout 層的驗證**不會**延伸進 action 內部。
-  → 每個 action 內都要重新確認身分（authentication）**與資源歸屬（authorization）**。
-- **只驗證身分不驗證歸屬**。確認「你是誰」不等於確認「這筆資料是你的」。
-  任何吃 id 參數的 action 都要檢查該資源屬於當前使用者。
-- **action 參數未驗證**。來自客戶端的輸入一律要 schema 驗證。
-- **回傳完整的資料庫 record**。只回傳 UI 需要的欄位，不要把整筆 row 丟出去。
-- **只在 middleware / proxy 做驗證**。CVE-2025-29927 可透過偽造
-  `x-middleware-subrequest` 標頭完全跳過 middleware，因此驗證不能只存在於此。
+- **A Server Action must re-verify authorization itself.** This is the most common and most
+  severe mistake: once a Server Action is created and exported, **it can be POSTed to
+  directly**, bypassing your UI entirely. Checks at the page or layout level **do not** carry
+  into the action.
+  → Every action must re-confirm identity (authentication) **and resource ownership
+  (authorization)** inside itself.
+- **Checking identity but not ownership.** Confirming "who you are" is not confirming "this
+  record is yours". Any action that takes an id parameter must check that the resource
+  belongs to the current user.
+- **Unvalidated action arguments.** Input from the client must always be schema validated.
+- **Returning whole database records.** Return only the fields the UI needs; do not dump the
+  entire row.
+- **Authenticating only in middleware / a proxy.** CVE-2025-29927 allows middleware to be
+  bypassed entirely by forging the `x-middleware-subrequest` header, so verification cannot
+  live there alone.
 
-## Server / Client 邊界
+## Server / Client boundary
 
-- **`'use client'` 放在 layout 或 barrel 檔案**。該檔案的**所有 import 與它直接 render 的
-  元件都會被拉進 client bundle**，一個位置錯誤會讓整棵子樹變成 client 元件。
-  → 把 `'use client'` 放在盡可能深的葉節點；用 children/props 傳入 Server Component。
-- **傳不可序列化的值給 Client Component**：函式、class instance、Date 以外的複雜物件。
-- **在 Client Component 中存取伺服器端的機密**。只有 `NEXT_PUBLIC_` 前綴的環境變數
-  會進入客戶端——反過來說，帶這個前綴的東西一定會外洩。
-- **在 Server Component 中使用 client hook**（useState、useEffect、useContext）。
+- **`'use client'` in a layout or barrel file.** **Every import in that file and every
+  component it renders directly get pulled into the client bundle** — one misplaced directive
+  turns an entire subtree into client components.
+  → Put `'use client'` as deep in the leaves as possible; pass Server Components in via
+  children/props.
+- **Passing non-serializable values to a Client Component**: functions, class instances,
+  complex objects beyond Date.
+- **Accessing server-side secrets in a Client Component.** Only `NEXT_PUBLIC_`-prefixed env
+  vars reach the client — and conversely, anything carrying that prefix will leak.
+- **Using client hooks in a Server Component** (useState, useEffect, useContext).
 
 ## Hydration
 
-出現 hydration 不匹配時，成因幾乎必定是下列之一：
+When a hydration mismatch appears, the cause is almost always one of these:
 
-- render 期間使用 `Date.now()`、`Math.random()`、`new Date()` 或使用者語系的日期格式化
-- render 期間讀取 `typeof window !== 'undefined'` 或瀏覽器專屬 API
-- HTML 巢狀不合法（`<p>` 裡放 `<div>`、`<a>` 裡放 `<a>`、`<button>` 裡放 `<button>`）
-- 未隨 HTML 一起送出快照的外部變動資料
+- `Date.now()`, `Math.random()`, `new Date()`, or user-locale date formatting during render
+- reading `typeof window !== 'undefined'` or browser-only APIs during render
+- invalid HTML nesting (`<div>` inside `<p>`, `<a>` inside `<a>`, `<button>` inside
+  `<button>`)
+- external mutable data not sent as a snapshot alongside the HTML
 
-`suppressHydrationWarning` 是逃生口，只作用一層，不要拿來蓋住真正的問題。
+`suppressHydrationWarning` is an escape hatch that applies to one level only. Do not use it to
+paper over a real problem.
 
 ## useEffect
 
-大多數 useEffect 是不必要的。看到 effect 先問是不是下列情形：
+Most useEffects are unnecessary. When you see an effect, first ask whether it is one of
+these:
 
-- **依 props/state 計算衍生值** → 直接在 render 期間算，不要用 effect + state
-- **prop 變了要重設所有 state** → 傳不同的 `key`，不要在 effect 裡重設
-- **事件處理器之間共用邏輯** → 抽成函式，不要用 effect
-- **送出 POST（使用者操作觸發的）** → 放在事件處理器裡
-- **訂閱外部 store** → `useSyncExternalStore`
+- **Computing a derived value from props/state** → compute it during render, not effect +
+  state
+- **Resetting all state when a prop changes** → pass a different `key`, do not reset in an
+  effect
+- **Sharing logic between event handlers** → extract a function, do not use an effect
+- **Sending a POST triggered by a user action** → put it in the event handler
+- **Subscribing to an external store** → `useSyncExternalStore`
 
-真正需要 effect 的資料抓取，**必須處理 race condition**：先發的請求可能後回來。
-→ cleanup 中設 `ignore` 旗標。
+Data fetching that genuinely needs an effect **must handle the race condition**: an earlier
+request can come back later.
+→ Set an `ignore` flag in cleanup.
 
-## 其他
+## Other
 
-- **用 index 當 list 的 key**，或用 `Math.random()` 當 key（後者會重建整個 DOM 並清空使用者輸入）。
-- **`dangerouslySetInnerHTML` 內容未消毒**。除非來源完全可信，否則就是 XSS。
-- **`useSearchParams()` 沒有包 Suspense**，會讓**整個頁面**退化成客戶端渲染。
-- **`export const dynamic = 'force-static'` 會讓 `cookies()`、`headers()`、
-  `useSearchParams()` 靜默回傳空值**，這是很難查的 bug 來源。
-- **同一個元件內連續 await 多個獨立請求**會形成 waterfall。→ `Promise.all`。
-- **layout 讀取 runtime 資料**（`cookies()`、未快取的 fetch）時**不會**退回同層的
-  `loading.js`，而是直接阻塞導航。
+- **Using the index as a list key**, or `Math.random()` as a key (the latter rebuilds the
+  whole DOM and wipes user input).
+- **Unsanitized `dangerouslySetInnerHTML` content.** Unless the source is fully trusted, it
+  is XSS.
+- **`useSearchParams()` without a Suspense boundary** degrades **the entire page** to client
+  rendering.
+- **`export const dynamic = 'force-static'` makes `cookies()`, `headers()`, and
+  `useSearchParams()` silently return empty values** — a very hard bug to track down.
+- **Awaiting several independent requests in sequence in one component** creates a waterfall.
+  → `Promise.all`.
+- **A layout reading runtime data** (`cookies()`, uncached fetch) **does not** fall back to
+  the sibling `loading.js`; it blocks navigation outright.

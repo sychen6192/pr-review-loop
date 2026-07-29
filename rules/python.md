@@ -2,52 +2,62 @@
 applyTo: "**/*.py"
 ---
 
-# Python 審查規則
+# Python review rules
 
-linter（ruff / mypy / bandit）已經會抓下列規則，**不要重複回報**：
-格式、import 排序、未使用變數、行長度、型別錯誤、bandit 的安全樣式比對。
+The linters (ruff / mypy / bandit) already catch the following. **Do not report them again:**
+formatting, import ordering, unused variables, line length, type errors, bandit's security
+pattern matches.
 
-以下是工具抓不到、或抓到但需要脈絡判斷的問題。
+Below are the problems the tools miss, or flag but which need context to judge.
 
-## 可變預設值與閉包
+## Mutable defaults and closures
 
-- **函式參數的可變預設值**（`def f(x=[])`、`def f(x={})`）。整個程式生命週期共用同一個物件。
-  → 改成 `None` 再於函式內建立。
-- **class 屬性的可變預設值**。所有 instance 共用同一份，而且不明顯。
-  → 在 `__init__` 建立、標為 `ClassVar`、或改用不可變型別。
-- **迴圈變數被閉包捕獲**。lambda 或巢狀函式在迴圈中捕獲迴圈變數，全部會拿到最後一次的值。
-  → 用預設參數綁定，或 `functools.partial`。
+- **Mutable default arguments** (`def f(x=[])`, `def f(x={})`). One object shared for the
+  whole life of the process.
+  → Use `None` and build it inside the function.
+- **Mutable class attribute defaults.** Every instance shares one copy, and it is not
+  obvious.
+  → Build it in `__init__`, mark it `ClassVar`, or use an immutable type.
+- **Loop variable captured by a closure.** A lambda or nested function capturing a loop
+  variable inside a loop: all of them get the last value.
+  → Bind via a default argument, or `functools.partial`.
 
 ## async
 
-- **在 async 函式中呼叫阻塞 API**：`time.sleep`、`requests`、同步的 `open()`、
-  `subprocess.run`、`os.path` 系列。會卡住整個 event loop。
-  → 改用 async 對應版本，或 `run_in_executor`。
-- **fire-and-forget 的 `asyncio.create_task()`**。event loop 只持有 task 的弱參考，
-  沒保留參考的 task 可能在完成前就被 GC。
-  → 存進一個 set，並用 `add_done_callback` 移除。
-- **在 `except` 或 `finally` 中 await**，可能吞掉 `CancelledError` 導致取消失效。
-- **忘記 await**。`async def` 的回傳值沒被 await 就是一個從未執行的 coroutine，
-  而且通常靜默無錯。
+- **Blocking APIs called inside an async function**: `time.sleep`, `requests`, synchronous
+  `open()`, `subprocess.run`, the `os.path` family. They stall the whole event loop.
+  → Use the async equivalent, or `run_in_executor`.
+- **Fire-and-forget `asyncio.create_task()`.** The event loop holds only a weak reference to
+  the task; a task with no reference kept can be garbage collected before it completes.
+  → Store it in a set and remove it via `add_done_callback`.
+- **await inside `except` or `finally`** can swallow `CancelledError` and defeat
+  cancellation.
+- **Forgetting await.** An un-awaited return value from an `async def` is a coroutine that
+  never runs, and it usually fails silently.
 
-## 例外與資源
+## Exceptions and resources
 
-- **`except: pass` 或 `except Exception: pass`**。裸 except 連 `KeyboardInterrupt` 都吃掉。
-  → 至少記錄；要忽略請縮小到具體例外型別並寫明理由。
-- **在 `except` 中 raise 新例外卻沒有 `from`**，原始 traceback 會遺失。
-- **記錄例外用 `logging.error` 而非 `logging.exception`**，traceback 不會被記錄。
-- **開檔沒用 context manager**。例外發生時不保證關閉。`tempfile`、`socket`、
-  資料庫連線同理。
+- **`except: pass` or `except Exception: pass`.** A bare except even eats
+  `KeyboardInterrupt`.
+  → Log it at minimum; to ignore something, narrow to the specific exception type and state
+  why.
+- **Raising a new exception inside `except` without `from`** loses the original traceback.
+- **Logging an exception with `logging.error` instead of `logging.exception`** means the
+  traceback is not recorded.
+- **Opening a file without a context manager.** Closing is not guaranteed when an exception
+  occurs. Same for `tempfile`, `socket`, and database connections.
 
-## 型別與相等性
+## Types and equality
 
-- **實作了 `__eq__` 卻沒有 `__hash__`**。Python 會把 `__hash__` 設為 `None`，
-  物件變成不可雜湊，放進 set 或當 dict key 會直接壞掉。
-- **`datetime.now()` / `utcnow()` 沒有指定時區**。跨時區部署時會產生難以追查的偏差。
+- **`__eq__` implemented without `__hash__`.** Python sets `__hash__` to `None`, the object
+  becomes unhashable, and putting it in a set or using it as a dict key breaks outright.
+- **`datetime.now()` / `utcnow()` without a timezone.** Produces hard-to-trace skew in
+  cross-timezone deployments.
 
-## pandas（若有使用）
+## pandas (if used)
 
-- **鏈式賦值**（`df[df.a > 1]['b'] = 3`）。pandas 3.0 起 Copy-on-Write 是唯一模式，
-  這種寫法會拋 `ChainedAssignmentError`。→ 用 `.loc`。
-- **`inplace=True` 搭配鏈式操作**只會修改暫時物件，原始 DataFrame 不變。
-- **`df.to_numpy()` 回傳唯讀陣列**，對它賦值會拋 `ValueError`。
+- **Chained assignment** (`df[df.a > 1]['b'] = 3`). From pandas 3.0, Copy-on-Write is the
+  only mode, and this raises `ChainedAssignmentError`. → Use `.loc`.
+- **`inplace=True` on a chained operation** only mutates the temporary object; the original
+  DataFrame is unchanged.
+- **`df.to_numpy()` returns a read-only array**; assigning to it raises `ValueError`.

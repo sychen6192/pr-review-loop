@@ -34,6 +34,11 @@ export const ADO_PAT = process.env.PRR_ADO_PAT ?? process.env.SYSTEM_ACCESSTOKEN
 // auto = use a PAT if configured, otherwise mint a token via the az CLI.
 export const ADO_AUTH_MODE = (process.env.PRR_AUTH_MODE ?? "auto") as "auto" | "pat" | "azcli";
 export const AZ_BIN = process.env.PRR_AZ_BIN ?? "az";
+// Path to a CA bundle to trust, for networks with TLS interception. Applied by bin/prloop,
+// which exports it as NODE_EXTRA_CA_CERTS before starting Node — that variable is read at
+// process start, so setting it from inside the program would be too late. Declared here so
+// doctor and probe can tell you when it was configured but never took effect.
+export const CA_CERTS = process.env.PRR_CA_CERTS ?? "";
 // Normally left empty: the collection base is derived from the PR URL, which is the only
 // thing that works across cloud, visualstudio.com and on-prem (virtual directory +
 // collection). Set this only when the API host differs from the browser host.

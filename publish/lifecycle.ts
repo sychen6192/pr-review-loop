@@ -33,7 +33,7 @@ export async function resolveLastReviewedIteration(ref: PrRef): Promise<number |
   try {
     return lastReviewedIteration(await listThreads(ref));
   } catch (e) {
-    logVerbose(`讀取上次審查的 iteration 失敗：${e instanceof Error ? e.message : String(e)}`);
+    logVerbose(`Could not read last reviewed iteration: ${e instanceof Error ? e.message : String(e)}`);
     return undefined;
   }
 }
@@ -75,7 +75,7 @@ export function findStaleThreads(threads: Thread[], files: FileDiff[]): StaleThr
     // outside the file, or the line is no longer one this PR touches while the file itself
     // was rewritten, the original code is gone.
     if (line > fd.rightLines.length) {
-      stale.push({ threadId: t.id, file: ctx.filePath, line, reason: "行號已超出檔案範圍" });
+      stale.push({ threadId: t.id, file: ctx.filePath, line, reason: "line is past the end of the file" });
     }
   }
   return stale;
@@ -87,12 +87,12 @@ export async function resolveStaleThreads(ref: PrRef, stale: StaleThread[]): Pro
     try {
       await setThreadStatus(ref, s.threadId, "fixed");
       resolved++;
-      logVerbose(`  已關閉 thread ${s.threadId}（${s.file}:${s.line}）：${s.reason}`);
+      logVerbose(`  Closed thread ${s.threadId} (${s.file}:${s.line}): ${s.reason}`);
     } catch (e) {
-      logVerbose(`  關閉 thread ${s.threadId} 失敗：${e instanceof Error ? e.message : String(e)}`);
+      logVerbose(`  Could not close thread ${s.threadId}: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  if (resolved > 0) log(`已自動關閉 ${resolved} 則指向的程式碼已變更的留言`);
+  if (resolved > 0) log(`Auto-closed ${resolved} comments whose code has changed`);
   return resolved;
 }
 

@@ -28,7 +28,7 @@ export function die(msg: string): never {
 }
 
 export function tail(s: string, n = 6000): string {
-  return s.length > n ? `…(截斷)\n${s.slice(-n)}` : s;
+  return s.length > n ? `…(truncated)\n${s.slice(-n)}` : s;
 }
 
 // Heartbeat every 15s during long ops so it doesn't look hung.
@@ -36,7 +36,7 @@ export function startHeartbeat(label: string): () => void {
   let ticks = 0;
   const timer = setInterval(() => {
     ticks++;
-    console.log(`[${elapsed()}] ${label} 仍在進行中（已等待 ${ticks * 15} 秒）`);
+    console.log(`[${elapsed()}] ${label} still running (waited ${ticks * 15}s)`);
   }, 15_000);
   return () => clearInterval(timer);
 }

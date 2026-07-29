@@ -94,7 +94,7 @@ export function selectRules(rules: Rule[], changedPaths: string[]): Rule[] {
     }),
   );
   if (selected.length > 0) {
-    logVerbose(`載入規則：${selected.map((r) => r.name).join("、")}`);
+    logVerbose(`Loaded rules: ${selected.map((r) => r.name).join(", ")}`);
   }
   return selected;
 }

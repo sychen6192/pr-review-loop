@@ -93,19 +93,19 @@ async function runTool(
   workdir: string,
 ): Promise<{ findings: ToolFinding[]; skipped?: string }> {
   if (spec.requires && !fs.existsSync(path.join(workdir, spec.requires))) {
-    return { findings: [], skipped: `找不到 ${spec.requires}` };
+    return { findings: [], skipped: `${spec.requires} not found` };
   }
   if (!(await commandExists(spec.bin))) {
-    return { findings: [], skipped: `PATH 中找不到 ${spec.bin}` };
+    return { findings: [], skipped: `${spec.bin} not found on PATH` };
   }
 
   const args = spec.args(files);
-  logVerbose(`static：${spec.name} ${args.slice(0, 6).join(" ")}…`);
+  logVerbose(`static: ${spec.name} ${args.slice(0, 6).join(" ")}…`);
   const res = await run(spec.bin, args, STATIC_TIMEOUT_MS);
 
   // Linters conventionally exit non-zero when they find something; that's not a failure.
   if (res.code !== 0 && !spec.allowNonZeroExit) {
-    return { findings: [], skipped: `結束碼 ${res.code}：${res.stderr.slice(0, 200)}` };
+    return { findings: [], skipped: `exit code ${res.code}: ${res.stderr.slice(0, 200)}` };
   }
   const raw = spec.readStderr ? res.stderr : res.stdout || res.stderr;
   const parsed = parseToolOutput(raw, spec, workdir);
@@ -117,16 +117,16 @@ async function runTool(
 
 export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
   if (!WORKDIR) {
-    return { ...EMPTY, skippedReason: "未設定 PRR_WORKDIR，靜態分析需要原始碼工作目錄" };
+    return { ...EMPTY, skippedReason: "PRR_WORKDIR not set; static analysis needs a source working directory" };
   }
   if (!fs.existsSync(WORKDIR)) {
-    return { ...EMPTY, skippedReason: `PRR_WORKDIR 不存在：${WORKDIR}` };
+    return { ...EMPTY, skippedReason: `PRR_WORKDIR does not exist: ${WORKDIR}` };
   }
 
   const changedPaths = files.map((f) => stripLeadingSlash(f.path));
   const profiles = selectProfiles(changedPaths);
   if (profiles.length === 0) {
-    return { ...EMPTY, skippedReason: "本次變更沒有對應的語言 profile" };
+    return { ...EMPTY, skippedReason: "No language profile matches the changed files" };
   }
 
   const all: ToolFinding[] = [];
@@ -168,11 +168,11 @@ export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
   needsTriage.sort(bySeverity);
 
   log(
-    `static：執行 ${ranTools.length} 個工具 → ${all.length} 筆 → 變更行內 ${kept.length} 筆` +
-      `（事實 ${facts.length}、待 triage ${needsTriage.length}、風格 ${suppressedCount}），` +
-      `${dropped} 筆落在變更範圍外已濾除`,
+    `static: ran ${ranTools.length} tools → ${all.length} findings → ${kept.length} on changed lines` +
+      ` (${facts.length} facts, ${needsTriage.length} to triage, ${suppressedCount} style), ` +
+      `${dropped} filtered out as outside the changed region`,
   );
-  for (const s of skipped) logVerbose(`  略過 ${s.tool}：${s.reason}`);
+  for (const s of skipped) logVerbose(`  skipped ${s.tool}: ${s.reason}`);
 
   return { facts, needsTriage, suppressedCount, ranTools, skipped };
 }
@@ -194,8 +194,8 @@ export async function triageAndConvert(
   const batch = result.needsTriage.slice(0, MAX_TRIAGE_ITEMS);
   if (batch.length < result.needsTriage.length) {
     log(
-      `static triage：待判定 ${result.needsTriage.length} 筆，超過上限只處理前 ${batch.length} 筆` +
-        `（其餘未進入留言，請調高 PRR_MAX_TRIAGE_ITEMS 或收斂工具規則）`,
+      `static triage: ${result.needsTriage.length} awaiting verdict, over the cap — only the first ${batch.length} processed` +
+        ` (the rest are not commented; raise PRR_MAX_TRIAGE_ITEMS or tighten the tool rules)`,
     );
   }
 
@@ -219,12 +219,12 @@ export async function triageAndConvert(
 
     if (res.error) {
       // Fail closed: an un-triaged high-FP finding is noise, so it does not get posted.
-      log(`[WARN] static triage 失敗（${res.error}），${batch.length} 筆待判定 findings 不予留言`);
+      log(`[WARN] static triage failed (${res.error}); ${batch.length} findings awaiting verdict will not be commented`);
       dropped += batch.length;
     } else {
       const parsed = parseJsonObject<{ results?: unknown }>(res.text);
       if (!parsed.ok) {
-        log(`[WARN] static triage 輸出無法解析（${parsed.error}），${batch.length} 筆不予留言`);
+        log(`[WARN] static triage output unparseable (${parsed.error}); ${batch.length} findings will not be commented`);
         dropped += batch.length;
       } else {
         const verdicts = new Map<number, { keep: boolean; reason: string; severity?: Severity }>();
@@ -250,11 +250,11 @@ export async function triageAndConvert(
           triaged++;
           kept.push({ ...f, severity: v.severity ?? f.severity, message: v.reason || f.message });
         });
-        log(`static triage：${batch.length} 筆待判定 → 保留 ${triaged} 筆、濾除 ${batch.length - triaged} 筆`);
+        log(`static triage: ${batch.length} awaiting verdict → kept ${triaged}, filtered out ${batch.length - triaged}`);
       }
     }
   } else if (batch.length > 0) {
-    log(`[WARN] 未設定 PRR_TRIAGE_MODEL，${batch.length} 筆高誤報率 findings 不予留言`);
+    log(`[WARN] PRR_TRIAGE_MODEL not set; ${batch.length} high-false-positive findings will not be commented`);
     dropped += batch.length;
   }
 
@@ -274,7 +274,7 @@ export async function triageAndConvert(
       quote: lineText,
       side: "right",
       claim: `${f.message}`,
-      evidence: `由 ${f.tool} 回報${f.ruleId ? `（規則 ${f.ruleId}）` : ""}${f.helpUri ? `\n${f.helpUri}` : ""}`,
+      evidence: `Reported by ${f.tool}${f.ruleId ? ` (rule ${f.ruleId})` : ""}${f.helpUri ? `\n${f.helpUri}` : ""}`,
       // A deterministic tool is its own corroboration: it doesn't guess, so it doesn't
       // need a second model to agree before we believe the location exists.
       sources: [f.tool],

@@ -27,9 +27,15 @@ function envAny(...names: string[]): string {
   return "";
 }
 
-export const HTTPS_PROXY = envAny("HTTPS_PROXY", "https_proxy");
-export const HTTP_PROXY = envAny("HTTP_PROXY", "http_proxy");
-export const NO_PROXY = envAny("NO_PROXY", "no_proxy");
+// PRR_-prefixed values win over the conventional ones.
+//
+// The .env loader never overwrites an existing environment variable, so on a machine that
+// already exports HTTPS_PROXY — which is most corporate machines — writing it in .env has
+// no effect and no error. Giving prloop its own names makes .env a reliable place to
+// override the inherited setting, rather than a file whose contents silently do nothing.
+export const HTTPS_PROXY = envAny("PRR_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy");
+export const HTTP_PROXY = envAny("PRR_HTTP_PROXY", "HTTP_PROXY", "http_proxy");
+export const NO_PROXY = envAny("PRR_NO_PROXY", "NO_PROXY", "no_proxy");
 
 /**
  * Standard NO_PROXY semantics: comma-separated hosts, a leading dot or bare suffix matches

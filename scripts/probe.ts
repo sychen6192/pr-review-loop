@@ -415,6 +415,72 @@ async function probeViaAz(url: string): Promise<void> {
   }
 }
 
+/**
+ * Probes which CONNECT header shapes the proxy accepts.
+ *
+ * When git succeeds and everything else is refused, the deciding factor is some header the
+ * proxy inspects — but which one is not knowable from the outside. Rather than guessing one
+ * variant at a time, send several and report what comes back; the answer then configures
+ * the client instead of another round of speculation.
+ */
+async function probeConnectVariants(host: string, port: number): Promise<void> {
+  const proxy = bypassesProxy(host) ? "" : HTTPS_PROXY || HTTP_PROXY;
+  if (!proxy) return;
+
+  console.log("\n=== 4b. proxy 接受哪種 CONNECT 標頭 ===");
+
+  const variants: Array<{ name: string; headers: string[] }> = [
+    { name: "不帶任何額外標頭", headers: [] },
+    { name: "只帶 User-Agent", headers: [`User-Agent: ${USER_AGENT}`] },
+    {
+      name: "git 風格（UA + Proxy-Connection）",
+      headers: [`User-Agent: ${USER_AGENT}`, "Proxy-Connection: Keep-Alive"],
+    },
+    {
+      name: "undici 風格（Host 不帶埠 + Connection: close）",
+      headers: [`User-Agent: ${USER_AGENT}`, "Connection: close"],
+      },
+    {
+      name: "瀏覽器風格",
+      headers: [
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Proxy-Connection: Keep-Alive",
+      ],
+    },
+  ];
+
+  const pu = new URL(proxy);
+  for (const v of variants) {
+    const hostHeader = v.name.includes("Host 不帶埠") ? host : `${host}:${port}`;
+    const status = await new Promise<string>((resolve) => {
+      const s = net.connect(
+        { host: pu.hostname, port: Number(pu.port || 80), timeout: 12_000 },
+        () => {
+          s.write(
+            `CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${hostHeader}\r\n` +
+              v.headers.map((h) => `${h}\r\n`).join("") +
+              "\r\n",
+          );
+        },
+      );
+      s.once("data", (buf: Buffer) => {
+        s.destroy();
+        resolve((buf.toString("utf8").split("\r\n")[0] ?? "").trim());
+      });
+      s.once("error", (e: NodeJS.ErrnoException) => resolve(`連線錯誤：${e.message}`));
+      s.once("timeout", () => {
+        s.destroy();
+        resolve("逾時");
+      });
+    });
+    const ok = / 200 /.test(status);
+    console.log(`  ${ok ? "✅" : "❌"} ${v.name.padEnd(34)} → ${status}`);
+  }
+  console.log("");
+  console.log("  有 ✅ 的話，把它的差異告訴我（或用 PRR_USER_AGENT 換成該組的 UA）。");
+  console.log("  全部 ❌ 表示 proxy 擋的不是標頭，而是來源 IP、TLS 指紋或目的地白名單。");
+}
+
 async function main() {
   const url = process.argv[2];
   if (!url) {
@@ -475,6 +541,8 @@ async function main() {
   const exportIdx = process.argv.indexOf("--export-ca");
   const exportCaTo = exportIdx > 0 ? process.argv[exportIdx + 1] : undefined;
   await probeTls(new URL(ref.baseUrl).hostname, Number(new URL(ref.baseUrl).port || 443), exportCaTo);
+
+  await probeConnectVariants(new URL(ref.baseUrl).hostname, Number(new URL(ref.baseUrl).port || 443));
 
   console.log("\n=== 5. 用目前設定實際請求一次 ===");
   await rawGet(`${prBase(ref)}?api-version=${ADO_API_VERSION}`, header);

@@ -280,15 +280,15 @@ npx tsx scripts/probe.ts '<PR URL>'
   `probe` 的第 1 節會顯示目前的 proxy 設定，第 4 節會標明是直連還是經由 proxy——
   有 proxy 時 TLS 檢測會走 CONNECT 隧道，不會把防火牆的拒絕誤判成憑證問題。
 - **`proxy 拒絕 CONNECT：... 403`，但 git 對同一主機卻是通的。**
-  多半是 **proxy 依 User-Agent 過濾**：放行瀏覽器與 git，擋掉帶著陌生 UA、
-  或根本沒帶 UA 的請求。看起來像「這個主機被封鎖」，其實主機沒事，被拒的是用戶端。
+  多半是 **proxy 依 User-Agent 過濾**：放行瀏覽器與 git，擋掉陌生的用戶端。
+  看起來像「這個主機被封鎖」，其實主機沒事，被拒的是用戶端身分。
 
-  prloop 預設在**一般請求與 proxy CONNECT 上都送出** `git/2.34.1`。要換用別的字串：
+  `probe` 的第 4b 節會實測五種標頭組合，告訴你這台 proxy 放行哪種。prloop 預設
+  誠實地送出 `prloop/0.1`；若你的 proxy 只放行特定字串，可自行決定是否配合：
   ```bash
-  export PRR_USER_AGENT="git/2.34.1"     # 或瀏覽器的 UA
+  export PRR_USER_AGENT="git/2.34.1"
   ```
-  用 `GIT_CURL_VERBOSE=1 git ls-remote origin` 可以看到 git 送出的完整 CONNECT 標頭，
-  照抄它的 User-Agent 最保險。
+  這是針對 proxy 政策的權宜做法——正規解法是請網管把工具的出口加入允許清單。
 
   最有用的線索是**你的 git 是怎麼通的**:既然能對 Azure Repos 推拉程式碼，就存在
   一條可用路由。`git config --global --get https.proxy` 若與 `HTTPS_PROXY` 不同就改用它；
@@ -328,6 +328,12 @@ npx tsx scripts/probe.ts '<PR URL>'
 
   這個旗標只是讓 Node 改讀作業系統的信任存放區，**不會放行未受信任的憑證**
   （對自簽憑證實測仍然拒絕）。
+
+  **實際案例的完整解法**（企業 TLS 攔截環境）：攔截設備只出示重簽後的站台憑證，
+  中繼憑證既不在握手中、也不在系統憑證包裡。從瀏覽器匯出那張中繼憑證即可：
+  開啟該網站 → 網址列鎖頭 → 憑證 → 憑證路徑 → 選**中間那張** → 匯出為 Base64/PEM，
+  然後 `export NODE_EXTRA_CA_CERTS=/path/to/exported.pem`。
+  `tlsfix` 會自動判斷你是否屬於這種情況。
 
   **若 `az` / `curl` / `git` 在同一台機器上都能通、只有這個工具不行**，原因幾乎必定是
   信任來源不同：Python 與 curl 讀 `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` 指定的憑證包，

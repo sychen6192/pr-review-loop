@@ -323,8 +323,22 @@ npx tsx scripts/probe.ts '<PR URL>'
   這個旗標只是讓 Node 改讀作業系統的信任存放區，**不會放行未受信任的憑證**
   （對自簽憑證實測仍然拒絕）。
 
-  其他做法：Linux 上系統憑證包通常已含公司 CA，可試
-  `export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`。
+  **若 `az` / `curl` / `git` 在同一台機器上都能通、只有這個工具不行**，原因幾乎必定是
+  信任來源不同：Python 與 curl 讀 `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` 指定的憑證包，
+  Node 只認自己內建的清單。把同一個檔案指給 Node 即可：
+
+  ```bash
+  export NODE_EXTRA_CA_CERTS="$REQUESTS_CA_BUNDLE"   # 通常是 /etc/ssl/certs/ca-certificates.crt
+  ```
+
+  `bin/prloop` 會在啟動前自動做這件事（`NODE_EXTRA_CA_CERTS` 必須在 node 啟動前設定，
+  程式內部改不了），所以用 wrapper 執行時不需要手動設。直接跑 `npx tsx` 則要自己設。
+
+  確認公司 CA 是否在該檔案裡：
+  ```bash
+  awk '/BEGIN/{c=""} {c=c $0 RS} /END/{print c | "openssl x509 -noout -subject"; close("openssl x509 -noout -subject")}' \
+    /etc/ssl/certs/ca-certificates.crt | grep -i 你們公司名稱
+  ```
 
   確認用途可以暫時 `NODE_TLS_REJECT_UNAUTHORIZED=0`，但**不要留著**——那會關閉所有
   憑證驗證，等於接受任何中間人。確認完立刻改回 `NODE_EXTRA_CA_CERTS`。

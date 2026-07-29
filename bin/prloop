@@ -2,4 +2,19 @@
 # Wrapper so prloop can be run from any directory.
 set -euo pipefail
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Node ships its own CA list and ignores the system trust store, while Python and curl read
+# the bundle named by REQUESTS_CA_BUNDLE / SSL_CERT_FILE. On a network with TLS interception
+# that means az and curl work while every Node tool fails on the same machine. Inherit
+# whichever bundle the rest of the toolchain already trusts, unless one is set explicitly.
+# NODE_EXTRA_CA_CERTS is read at process start, so it has to happen here, before node runs.
+if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
+  for candidate in "${REQUESTS_CA_BUNDLE:-}" "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}"; do
+    if [ -n "$candidate" ] && [ -r "$candidate" ]; then
+      export NODE_EXTRA_CA_CERTS="$candidate"
+      break
+    fi
+  done
+fi
+
 exec npx tsx "$TOOL_DIR/loop.ts" "$@"

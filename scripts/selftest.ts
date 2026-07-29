@@ -690,6 +690,27 @@ section("NO_PROXY 比對規則");
   check("空的 NO_PROXY 不繞過", !no("", "dev.azure.com"));
   check("大小寫不敏感", no("INTERNAL.CORP", "ai.Internal.Corp"));
 }
+{
+  // .env cannot overwrite an existing environment variable, so on a machine that already
+  // exports HTTPS_PROXY the file's value would silently do nothing. The PRR_ names exist
+  // to make .env a reliable override; assert that precedence holds.
+  const pick = (env: Record<string, string | undefined>, ...names: string[]) => {
+    for (const n of names) {
+      const v = env[n] ?? env[n.toLowerCase()] ?? env[n.toUpperCase()];
+      if (v && v.trim()) return v.trim();
+    }
+    return "";
+  };
+  const order = ["PRR_HTTPS_PROXY", "HTTPS_PROXY", "https_proxy"];
+  eq(
+    "PRR_ 版本優先於 shell 的 HTTPS_PROXY",
+    pick({ PRR_HTTPS_PROXY: "http://a", HTTPS_PROXY: "http://b" }, ...order),
+    "http://a",
+  );
+  eq("沒有 PRR_ 時沿用慣用名稱", pick({ HTTPS_PROXY: "http://b" }, ...order), "http://b");
+  eq("小寫也會被讀到", pick({ https_proxy: "http://c" }, ...order), "http://c");
+  eq("全空時為空字串", pick({}, ...order), "");
+}
 
 console.log(`\n結果：${passed} 通過、${failed} 失敗`);
 process.exit(failed > 0 ? 1 : 0);

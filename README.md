@@ -266,6 +266,11 @@ npx tsx scripts/probe.ts '<PR URL>'
   export NO_PROXY=localhost,127.0.0.1,.corp.local
   ```
 
+  **要寫在 `.env` 請用 `PRR_` 版本**：`.env` 不覆蓋既有的環境變數，所以 shell 裡
+  已經有 `HTTPS_PROXY` 時，`.env` 裡的同名設定不會生效也不會報錯。
+  `PRR_HTTPS_PROXY` / `PRR_NO_PROXY` / `PRR_HTTP_PROXY` 優先於慣用名稱，
+  在 `.env` 裡設一定生效。`probe` 第 1 節會顯示每個值實際來自哪裡。
+
   `probe` 的第 1 節會顯示目前的 proxy 設定，第 4 節會標明是直連還是經由 proxy——
   有 proxy 時 TLS 檢測會走 CONNECT 隧道，不會把防火牆的拒絕誤判成憑證問題。
 - **`proxy 拒絕 CONNECT：... 403`，但 git 對同一主機卻是通的。**

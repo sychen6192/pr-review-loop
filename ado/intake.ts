@@ -59,10 +59,10 @@ async function buildFileDiff(ref: PrRef, entry: ChangeEntry): Promise<FileDiff> 
 export async function buildReviewContext(ref: PrRef, compareTo = 0): Promise<ReviewContext> {
   const [pr, iterations] = await Promise.all([getPrInfo(ref), listIterations(ref)]);
   if (iterations.length === 0) {
-    throw new Error(`PR !${ref.prId} 沒有任何 iteration，無法 review`);
+    throw new Error(`PR !${ref.prId} has no iterations; nothing to review`);
   }
   const iteration = iterations[iterations.length - 1]!;
-  log(`PR !${ref.prId}「${pr.title}」 ${pr.sourceBranch} → ${pr.targetBranch}，iteration ${iteration.id}`);
+  log(`PR !${ref.prId} "${pr.title}" ${pr.sourceBranch} → ${pr.targetBranch}, iteration ${iteration.id}`);
 
   const entries = await getIterationChanges(ref, iteration.id, compareTo);
   const skipped: Array<{ path: string; reason: string }> = [];
@@ -86,7 +86,7 @@ export async function buildReviewContext(ref: PrRef, compareTo = 0): Promise<Rev
     targets.push(e);
   }
 
-  log(`變更檔案 ${entries.length} 個，納入 review ${targets.length} 個，略過 ${skipped.length} 個`);
+  log(`${entries.length} changed files: ${targets.length} under review, ${skipped.length} skipped`);
 
   const files: FileDiff[] = [];
   // Modest concurrency: two blob fetches per file, and ADO rate-limits aggressively.
@@ -108,7 +108,7 @@ export async function buildReviewContext(ref: PrRef, compareTo = 0): Promise<Rev
         continue;
       }
       files.push(fd);
-      logVerbose(`  ${fd.path}：${fd.hunks.length} hunks，${fd.changedRightLines.size} 行變更`);
+      logVerbose(`  ${fd.path}: ${fd.hunks.length} hunks, ${fd.changedRightLines.size} changed lines`);
     }
   }
 

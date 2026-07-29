@@ -28,8 +28,8 @@ function gatherCandidates(): Candidate[] {
   const out: Candidate[] = [
     {
       name: current
-        ? `目前的環境設定（NODE_EXTRA_CA_CERTS=${current}）`
-        : "Node 內建清單（未設定任何額外憑證）",
+        ? `Current env (NODE_EXTRA_CA_CERTS=${current})`
+        : "Node built-in list (no extra certificates set)",
     },
   ];
   const seen = new Set<string>();
@@ -38,17 +38,17 @@ function gatherCandidates(): Candidate[] {
     if (!file || seen.has(file) || !fs.existsSync(file)) return;
     seen.add(file);
     out.push({
-      name: `${label}：${file}`,
+      name: `${label}: ${file}`,
       caFile: file,
       exportLine: `export NODE_EXTRA_CA_CERTS=${file}`,
     });
   };
 
   for (const [env, label] of [
-    ["REQUESTS_CA_BUNDLE", "Python/az 使用的憑證包"],
+    ["REQUESTS_CA_BUNDLE", "CA bundle used by Python/az"],
     ["SSL_CERT_FILE", "SSL_CERT_FILE"],
-    ["CURL_CA_BUNDLE", "curl 使用的憑證包"],
-    ["NODE_EXTRA_CA_CERTS", "目前已設定的"],
+    ["CURL_CA_BUNDLE", "CA bundle used by curl"],
+    ["NODE_EXTRA_CA_CERTS", "Currently set"],
   ] as const) {
     add(process.env[env] ?? "", label);
   }
@@ -57,7 +57,7 @@ function gatherCandidates(): Candidate[] {
     "/etc/pki/tls/certs/ca-bundle.crt",
     "/etc/ssl/ca-bundle.pem",
   ]) {
-    add(p, "系統憑證包");
+    add(p, "System CA bundle");
   }
   return out;
 }
@@ -72,7 +72,7 @@ function openSocket(host: string, port: number): Promise<net.Socket> {
       s.once("error", reject);
       s.once("timeout", () => {
         s.destroy();
-        reject(new Error("TCP 逾時"));
+        reject(new Error("TCP timeout"));
       });
       return;
     }
@@ -81,7 +81,7 @@ function openSocket(host: string, port: number): Promise<net.Socket> {
     s.once("error", reject);
     s.once("timeout", () => {
       s.destroy();
-      reject(new Error("proxy 逾時"));
+      reject(new Error("proxy timeout"));
     });
     s.once("connect", () => {
       const auth = pu.username
@@ -96,7 +96,7 @@ function openSocket(host: string, port: number): Promise<net.Socket> {
         if (/ 200 /.test(head)) resolve(s);
         else {
           s.destroy();
-          reject(new Error(`proxy 拒絕 CONNECT：${head}`));
+          reject(new Error(`proxy refused CONNECT: ${head}`));
         }
       });
     });
@@ -108,7 +108,7 @@ async function tryCandidate(host: string, port: number, c: Candidate): Promise<s
   try {
     sock = await openSocket(host, port);
   } catch (e) {
-    return `連線失敗：${e instanceof Error ? e.message : String(e)}`;
+    return `Connection failed: ${e instanceof Error ? e.message : String(e)}`;
   }
   return new Promise<string>((resolve) => {
     const opts: tls.ConnectionOptions = { socket: sock, servername: host, timeout: 20_000 };
@@ -120,7 +120,7 @@ async function tryCandidate(host: string, port: number, c: Candidate): Promise<s
         // append semantics explicitly.
         opts.ca = [...tls.rootCertificates, fs.readFileSync(c.caFile, "utf8")];
       } catch (e) {
-        resolve(`讀不到憑證檔：${e instanceof Error ? e.message : String(e)}`);
+        resolve(`Cannot read certificate file: ${e instanceof Error ? e.message : String(e)}`);
         return;
       }
     }
@@ -128,12 +128,12 @@ async function tryCandidate(host: string, port: number, c: Candidate): Promise<s
       const ok = t.authorized;
       const err = t.authorizationError;
       t.destroy();
-      resolve(ok ? "OK" : `驗證失敗：${String(err)}`);
+      resolve(ok ? "OK" : `Verification failed: ${String(err)}`);
     });
-    t.once("error", (e: NodeJS.ErrnoException) => resolve(`驗證失敗：${e.message}`));
+    t.once("error", (e: NodeJS.ErrnoException) => resolve(`Verification failed: ${e.message}`));
     t.once("timeout", () => {
       t.destroy();
-      resolve("TLS 逾時");
+      resolve("TLS timeout");
     });
   });
 }
@@ -165,16 +165,16 @@ async function chaseAia(host: string, port: number): Promise<string | undefined>
 
   const urls = info?.["CA Issuers - URI"] ?? [];
   if (urls.length === 0) {
-    console.log("  憑證中沒有 AIA（CA Issuers）欄位，無法自動取得中繼憑證。");
+    console.log("  Certificate has no AIA (CA Issuers) field; cannot fetch the intermediate automatically.");
     return undefined;
   }
 
   for (const url of urls) {
-    console.log(`  嘗試下載中繼憑證：${url}`);
+    console.log(`  Downloading intermediate certificate: ${url}`);
     try {
       const res = await fetch(url, { dispatcher: dispatcherFor(url) } as RequestInit);
       if (!res.ok) {
-        console.log(`     HTTP ${res.status}，略過`);
+        console.log(`     HTTP ${res.status}, skipped`);
         continue;
       }
       const buf = Buffer.from(await res.arrayBuffer());
@@ -189,10 +189,10 @@ async function chaseAia(host: string, port: number): Promise<string | undefined>
         (p) => fs.existsSync(p),
       );
       fs.writeFileSync(target, pem + (systemBundle ? fs.readFileSync(systemBundle, "utf8") : ""));
-      console.log(`     ✅ 已寫入 ${target}（中繼憑證 + 系統憑證包）`);
+      console.log(`     ✅ Wrote ${target} (intermediate + system CA bundle)`);
       return target;
     } catch (e) {
-      console.log(`     下載失敗：${e instanceof Error ? e.message : String(e)}`);
+      console.log(`     Download failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   return undefined;
@@ -201,7 +201,7 @@ async function chaseAia(host: string, port: number): Promise<string | undefined>
 async function main() {
   const url = process.argv[2];
   if (!url) {
-    console.error("用法：tsx scripts/tlsfix.ts '<PR URL>'");
+    console.error("Usage: tsx scripts/tlsfix.ts '<PR URL>'");
     process.exit(1);
   }
   const ref = parsePrUrl(url);
@@ -209,10 +209,10 @@ async function main() {
   const host = u.hostname;
   const port = Number(u.port || 443);
 
-  console.log(`\n目標：${host}:${port}`);
+  console.log(`\nTarget: ${host}:${port}`);
   const proxy = bypassesProxy(host) ? "" : HTTPS_PROXY || HTTP_PROXY;
-  console.log(`連線方式：${proxy ? `經由 proxy ${proxy}` : "直接連線"}`);
-  console.log(`\n逐一測試各種憑證設定：\n`);
+  console.log(`Connection: ${proxy ? `via proxy ${proxy}` : "direct"}`);
+  console.log(`\nTesting each certificate config:\n`);
 
   const candidates = gatherCandidates();
   const winners: Candidate[] = [];
@@ -227,10 +227,10 @@ async function main() {
 
   console.log("\n" + "=".repeat(70));
   if (winners.length === 0) {
-    console.log("全部失敗 —— 缺的是「簽發站台憑證的那張中繼憑證」。");
+    console.log("All failed — the missing piece is the intermediate certificate that signed the site cert.");
     console.log("");
-    console.log("瀏覽器能開是因為它會依憑證裡的 AIA 欄位自動下載該中繼憑證；");
-    console.log("Node 與 OpenSSL 都不會做這件事。現在試著自動下載：");
+    console.log("Browsers work because they follow the AIA field in the cert to download that");
+    console.log("intermediate. Node and OpenSSL do not. Trying the download now:");
     console.log("");
     const chain = await chaseAia(host, port);
     if (chain) {
@@ -238,47 +238,47 @@ async function main() {
       console.log("");
       if (result === "OK") {
         console.log("=".repeat(70));
-        console.log("✅ 成功！用這個檔案即可：");
+        console.log("✅ Works. Use this file:");
         console.log("");
         console.log(`     export NODE_EXTRA_CA_CERTS=${chain}`);
         console.log("");
-        console.log("  加進 ~/.bashrc 就一勞永逸。");
+        console.log("  Add it to ~/.bashrc to make it permanent.");
         process.exit(0);
       }
-      console.log(`  以下載到的憑證測試仍失敗：${result}`);
+      console.log(`  Still failing with the downloaded certificate: ${result}`);
     }
     console.log("");
-    console.log("請向 IT 索取「簽發代理憑證的中繼 CA」（本例為 proxy 那張），存成 .pem 後：");
-    console.log("     export NODE_EXTRA_CA_CERTS=/path/to/那個檔案");
+    console.log("Ask IT for the intermediate CA that signed the proxy certificate, save it as .pem, then:");
+    console.log("     export NODE_EXTRA_CA_CERTS=/path/to/that-file.pem");
     console.log("");
-    console.log("或從瀏覽器匯出：開啟該網站 → 點網址列的鎖頭 → 憑證 → 憑證路徑 →");
-    console.log("選中間那張 → 匯出為 Base64/PEM。");
+    console.log("Or export it from a browser: open the site → click the padlock → certificate →");
+    console.log("certification path → pick the middle one → export as Base64/PEM.");
     process.exit(1);
   }
 
   // If the built-in list already verifies, adding a bundle is noise — recommend nothing.
   const builtinWorks = winners.some((w) => !w.caFile);
-  console.log(`可用的設定有 ${winners.length} 種。`);
+  console.log(`${winners.length} working config(s).`);
   console.log("");
   if (builtinWorks) {
     console.log(
       process.env["NODE_EXTRA_CA_CERTS"]
-        ? `  ✅ 目前的設定就可以用（NODE_EXTRA_CA_CERTS=${process.env["NODE_EXTRA_CA_CERTS"]}）。\n     把它加進 ~/.bashrc 就一勞永逸。`
-        : "  不需要任何憑證設定 —— Node 內建清單就能驗證通過。",
+        ? `  ✅ The current setting works (NODE_EXTRA_CA_CERTS=${process.env["NODE_EXTRA_CA_CERTS"]}).\n     Add it to ~/.bashrc to make it permanent.`
+        : "  No certificate config needed — Node's built-in list verifies fine.",
     );
-    console.log("  憑證這一關已通過，若 prloop 仍失敗請看 probe 的第 5 節（HTTP 狀態）。");
+    console.log("  Certificates are fine. If prloop still fails, see probe section 5 (HTTP status).");
     console.log("");
     console.log(`     npx tsx scripts/probe.ts '${url}'`);
   } else {
     const best = winners.find((w) => w.exportLine)!;
-    console.log("  建議使用：");
+    console.log("  Recommended:");
     console.log("");
     console.log(`     ${best.exportLine}`);
     console.log("");
-    console.log("  把這行加進 ~/.bashrc 或 ~/.zshrc 就一勞永逸。");
-    console.log("  或直接用 ./bin/prloop 執行——它會自動沿用其他工具的憑證包。");
+    console.log("  Add that line to ~/.bashrc or ~/.zshrc to make it permanent.");
+    console.log("  Or just run ./bin/prloop — it picks up other tools' CA bundles automatically.");
     console.log("");
-    console.log("  接著執行：");
+    console.log("  Then run:");
     console.log(`     ${best.exportLine}`);
     console.log(`     npx tsx scripts/probe.ts '${url}'`);
   }

@@ -3,13 +3,19 @@
 set -euo pipefail
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Node ships its own CA list and ignores the system trust store, while Python and curl read
-# the bundle named by REQUESTS_CA_BUNDLE / SSL_CERT_FILE. On a network with TLS interception
-# that means az and curl work while every Node tool fails on the same machine. Inherit
-# whichever bundle the rest of the toolchain already trusts, unless one is set explicitly.
-# NODE_EXTRA_CA_CERTS is read at process start, so it has to happen here, before node runs.
+# NODE_EXTRA_CA_CERTS is read once at process start, so it cannot be applied from inside the
+# program — it has to be exported here. Precedence:
+#   1. NODE_EXTRA_CA_CERTS already in the environment
+#   2. PRR_CA_CERTS from .env (the place to put a corporate CA)
+#   3. whatever bundle the rest of the toolchain already trusts. Node ships its own CA list
+#      and ignores the system store, which is why az/curl/git can work on a TLS-intercepting
+#      network while every Node tool fails on the same machine.
 if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
-  for candidate in "${REQUESTS_CA_BUNDLE:-}" "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}"; do
+  if [ -z "${PRR_CA_CERTS:-}" ] && [ -f "$TOOL_DIR/.env" ]; then
+    PRR_CA_CERTS="$(sed -n 's/^[[:space:]]*PRR_CA_CERTS[[:space:]]*=[[:space:]]*//p' "$TOOL_DIR/.env" \
+      | tail -1 | sed 's/^["'\'']//; s/["'\'']$//')"
+  fi
+  for candidate in "${PRR_CA_CERTS:-}" "${REQUESTS_CA_BUNDLE:-}" "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}"; do
     if [ -n "$candidate" ] && [ -r "$candidate" ]; then
       export NODE_EXTRA_CA_CERTS="$candidate"
       break

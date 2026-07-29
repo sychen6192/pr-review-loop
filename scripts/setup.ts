@@ -18,14 +18,15 @@ function main() {
   for (const f of files) {
     const dest = path.join(destDir, f);
     fs.copyFileSync(path.join(srcDir, f), dest);
-    console.log(`  已安裝 ${f} → ${dest}`);
+    console.log(`  Installed ${f} → ${dest}`);
   }
 
-  console.log(`\n完成，共 ${files.length} 個 agent。`);
-  console.log("使用 opencode runner 時設 PRR_RUNNER=opencode。");
+  console.log(`\nDone. ${files.length} agent(s).`);
+  console.log("Set PRR_RUNNER=opencode to use the opencode runner.");
   console.log(
-    "提醒：opencode 不會把 response_format 傳給後端，schema 只能靠 prompt 約束。\n" +
-      "若後端支援 guided decoding（vLLM/xgrammar），用 PRR_RUNNER=openai 精度會更好。",
+    "Note: opencode does not pass response_format to the backend, so the schema is only\n" +
+      "enforced by the prompt. If the backend supports guided decoding (vLLM/xgrammar),\n" +
+      "PRR_RUNNER=openai is more accurate.",
   );
 }
 

@@ -74,7 +74,7 @@ export class OpenAICompatRunner implements ModelRunner {
       try {
         parsed = JSON.parse(text) as OpenAIResponse;
       } catch {
-        return { text: "", model: req.model, error: `回應非 JSON：${text.slice(0, 500)}` };
+        return { text: "", model: req.model, error: `response is not JSON: ${text.slice(0, 500)}` };
       }
       if (parsed.error?.message) {
         return { text: "", model: req.model, error: parsed.error.message };
@@ -82,8 +82,8 @@ export class OpenAICompatRunner implements ModelRunner {
       const content = parsed.choices?.[0]?.message?.content ?? "";
       const secs = Math.round((Date.now() - started) / 1000);
       logVerbose(
-        `${req.model} 回應 ${content.length} 字元、${secs}s` +
-          (parsed.usage ? `（in ${parsed.usage.prompt_tokens ?? "?"} / out ${parsed.usage.completion_tokens ?? "?"} tokens）` : ""),
+        `${req.model} replied ${content.length} chars, ${secs}s` +
+          (parsed.usage ? ` (in ${parsed.usage.prompt_tokens ?? "?"} / out ${parsed.usage.completion_tokens ?? "?"} tokens)` : ""),
       );
       return {
         text: content,
@@ -93,7 +93,7 @@ export class OpenAICompatRunner implements ModelRunner {
       };
     } catch (e) {
       const msg = e instanceof Error && e.name === "AbortError"
-        ? `逾時（${Math.round(LLM_TIMEOUT_MS / 1000)}s）`
+        ? `timeout (${Math.round(LLM_TIMEOUT_MS / 1000)}s)`
         : String(e);
       return { text: "", model: req.model, error: msg };
     } finally {

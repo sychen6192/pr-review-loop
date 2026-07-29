@@ -48,7 +48,7 @@ function extractBalanced(raw: string): string | undefined {
 }
 
 export function parseJsonObject<T = unknown>(raw: string): ParseResult<T> {
-  if (!raw || raw.trim() === "") return { ok: false, error: "模型回傳空字串" };
+  if (!raw || raw.trim() === "") return { ok: false, error: "model returned an empty string" };
 
   const cleaned = raw
     .replace(/^\s*```(?:json)?\s*/i, "")
@@ -61,7 +61,7 @@ export function parseJsonObject<T = unknown>(raw: string): ParseResult<T> {
   if (direct.ok) return direct;
 
   const balanced = extractBalanced(cleaned);
-  if (!balanced) return { ok: false, error: "輸出中找不到完整的 JSON 物件" };
+  if (!balanced) return { ok: false, error: "no complete JSON object found in output" };
   return tryParse<T>(balanced);
 }
 
@@ -69,6 +69,6 @@ function tryParse<T>(s: string): ParseResult<T> {
   try {
     return { ok: true, value: JSON.parse(s) as T };
   } catch (e) {
-    return { ok: false, error: `JSON.parse 失敗：${e instanceof Error ? e.message : String(e)}` };
+    return { ok: false, error: `JSON.parse failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 }

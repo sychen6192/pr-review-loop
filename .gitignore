@@ -3,7 +3,7 @@ runs/
 .env
 *.log
 
-# probe --export-ca 產生的憑證，屬環境專屬不進版控
+# Certificates written by probe --export-ca: environment-specific, never committed
 corporate-ca.pem
 *.pem
 corporate-chain.pem

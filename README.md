@@ -1,409 +1,450 @@
-# prloop — Azure DevOps PR 自動審查
+# prloop — Automated PR Review for Azure DevOps
 
-對 Azure DevOps 的 Pull Request 執行自動程式碼審查。控制流完全在 TypeScript：模型只負責
-「找出問題並引用出問題的程式碼」，**行號、去重、發佈與否一律由 pipeline 確定性決定**。
+Runs automated code review on Azure DevOps Pull Requests. Control flow lives entirely in
+TypeScript: the model only "finds problems and quotes the offending code". **Line numbers,
+dedup, and publish decisions are all determined by the pipeline, deterministically.**
 
-完整設計與研究依據見 [PROPOSAL.md](./PROPOSAL.md)。
+Full design and research basis: [PROPOSAL.md](./PROPOSAL.md).
 
-## 目前進度
+## Status
 
-| 里程碑 | 內容 | 狀態 |
+| Milestone | Scope | Status |
 | --- | --- | --- |
-| M1 | ADO REST 直連、本地 diff、quote 行號錨定、sticky summary + inline 留言 | ✅ 已完成 |
-| M2 | 兩軸審查：Work Item 需求檢查（先讀 req 再審）+ 程式碼檢查，獨立額度不互相排擠 | ✅ 已完成 |
-| M3 | 多模型平行 finder + 跨家族 skeptic 對抗 + 共識裁決 | ✅ 已完成 |
-| M4 | 規則層 + Python / Java / Next.js 靜態分析整合與 LLM triage | ✅ 已完成 |
-| M5 | iteration 增量審查、thread 自動 resolve、dismissal 記錄 | ✅ 已完成 |
+| M1 | Direct ADO REST, local diff, quote-based line anchoring, sticky summary + inline comments | ✅ Done |
+| M2 | Two-axis review: Work Item requirement check (read reqs first, then review) + code check, independent quotas, no crowding out | ✅ Done |
+| M3 | Parallel multi-model finder + cross-family skeptic adversary + consensus verdict | ✅ Done |
+| M4 | Rules layer + Python / Java / Next.js static analysis integration with LLM triage | ✅ Done |
+| M5 | Incremental review per iteration, auto-resolve threads, dismissal logging | ✅ Done |
 
-M1–M5 全數完成。可對真實 PR 端到端執行:先讀需求、再審程式碼,兩軸分開呈現,留言錨定正確。
+M1–M5 all complete. Runs end-to-end on real PRs: reads requirements first, then reviews code,
+presents both axes separately, anchors comments correctly.
 
-## 兩軸審查
+## Two-Axis Review
 
-一個 PR 可以在一軸過、另一軸掛:遵守所有規範但做錯東西,或做對事情但寫法有問題。
-兩軸若合併排名,在留言上限之下會互相排擠——「需求根本沒做完」會被三個 critical
-的 code 問題擠掉。因此 prloop 讓兩軸**各自獨立執行、各自獨立額度、summary 分區呈現**,
-而且兩軸的模型看不到對方的結果,避免一軸被拿來替另一軸開脫。
+A PR can pass one axis and fail the other: follow every convention but build the wrong thing,
+or build the right thing badly. Ranking both axes together makes them crowd each other out
+under a comment cap — "the requirement isn't done" gets squeezed out by three critical code
+findings. So prloop runs the two axes **independently, with independent quotas, in separate
+summary sections**. Neither axis's models see the other's results, so one axis can never be
+used to excuse the other.
 
-- **需求軸**:抓 PR 連結的 Work Item(含向上一層找 acceptance criteria),逐條判定
-  `satisfied / missing / partial / misunderstood / not-verifiable`,另外列出範圍外變更。
-  判定的是「失敗的方式」而非「完成百分比」——後者給不出行動指引。
-- **程式碼軸**:9 類 finding × 4 級嚴重度,嚴重度用依序判斷的決策鏈
-  (最關鍵的分界是「有沒有繞過方式」),不是形容詞。
+- **Requirement axis**: pulls the PR's linked Work Items (walking one level up for acceptance
+  criteria), and gives each criterion a verdict of
+  `satisfied / missing / partial / misunderstood / not-verifiable`, plus a list of out-of-scope
+  changes. The verdict describes *how it failed*, not *what percent is done* — the latter gives
+  no actionable direction.
+- **Code axis**: 9 finding categories × 4 severity levels. Severity comes from an ordered
+  decision chain (the key split: is there a workaround?), not adjectives.
 
-## 為什麼不用 azure-devops-mcp
+## Why Not azure-devops-mcp
 
-留言貼錯行是結構性問題，不是設定問題：MCP 是 REST 的薄包裝，不做錨點驗證、沒有 iteration
-簿記，舊版甚至取不到檔案行內容，模型只能自行推測行號（見 azure-devops-mcp #793、#868）。
-prloop 因此直連 REST，並且**模型的輸出 schema 裡根本沒有行號欄位**：
+Comments landing on the wrong line is structural, not a config problem: MCP is a thin wrapper
+over REST — no anchor validation, no iteration bookkeeping, and older versions couldn't even
+fetch file line content, so the model had to guess line numbers (see azure-devops-mcp #793,
+#868). prloop talks to REST directly, and **the model's output schema has no line number field
+at all**:
 
-1. 模型只回傳 `quote` —— 逐字複製出問題的原始碼。
-2. pipeline 依 blob objectId 取得該 iteration 的**原始 bytes**（不經本地 checkout，避開
-   CRLF/BOM 正規化差異），在其中搜尋 quote 得到絕對行號。
-3. 同一段程式碼出現多次時，用模型提供的前後文消歧，再優先選擇落在本次變更行上的位置。
-4. 找不到或無法消歧 → **降級進 summary 留言**，絕不猜行號貼上去。
+1. The model returns only a `quote` — a verbatim copy of the offending source.
+2. The pipeline fetches the **raw bytes** of that iteration's blob by objectId (no local
+   checkout, avoiding CRLF/BOM normalization differences) and searches for the quote to get an
+   absolute line number.
+3. When the same code appears more than once, model-supplied context disambiguates, then
+   positions on changed lines win.
+4. Not found or not disambiguable → **downgrade into the summary comment**. Never guess a line
+   number.
 
-副作用：引用了不存在的程式碼 = 幻覺，會在這一步被自動攔掉。
+Side effect: quoting code that doesn't exist = hallucination, caught automatically at this step.
 
-## 前置需求
+## Prerequisites
 
-- Node.js 20 以上（使用內建 fetch）。
-- Azure DevOps 認證，以下**二擇一**：
-  - **PAT**：需要 **Code (Read & Write)** scope，填入 `PRR_ADO_PAT`。在 pipeline 中可改用
-    `$(System.AccessToken)`，但要授予 Build Service 對該 repo 的 Contribute to pull requests 權限。
-  - **az CLI**：不設 PAT，改為 `az login` 即可，工具會自動用你的登入身分取 token。
-    組織政策不發 PAT、或不想把 PAT 落地到 `.env` 時用這個。
-- 一個 OpenAI 相容的模型 endpoint：LiteLLM proxy、vLLM 或 Ollama 的 `/v1`。
+- Node.js 20+ (uses built-in fetch).
+- Azure DevOps auth, **pick one**:
+  - **PAT**: needs **Code (Read & Write)** scope, set as `PRR_ADO_PAT`. In a pipeline you can use
+    `$(System.AccessToken)` instead, but grant the Build Service Contribute to pull requests on the repo.
+  - **az CLI**: skip the PAT, just `az login` — the tool takes a token from your login identity.
+    Use this when org policy blocks PATs, or you don't want a PAT sitting in `.env`.
+- An OpenAI-compatible model endpoint: LiteLLM proxy, vLLM, or Ollama's `/v1`.
 
-## 安裝
+## Install
 
 ```bash
 git clone <repo> prloop && cd prloop
 npm install
-cp .env.example .env      # 填入 PRR_ADO_PAT 與 PRR_LLM_BASE_URL
-npm run check             # 型別檢查 + 離線 selftest
+cp .env.example .env      # fill in PRR_ADO_PAT and PRR_LLM_BASE_URL
+npm run check             # typecheck + offline selftest
 ```
 
-選用：把 wrapper 加進 PATH。
+Optional: add the wrapper to PATH.
 
 ```bash
 echo 'export PATH="$PATH:'$(pwd)'/bin"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-## 第一次執行
+## First Run
 
 ```bash
-npx tsx scripts/doctor.ts '<PR URL>' --smoke   # preflight，並實測模型一次
-prloop '<PR URL>' --dry-run                    # 只計算不發佈，先看結果對不對
-prloop '<PR URL>'                              # 正式發佈留言
+npx tsx scripts/doctor.ts '<PR URL>' --smoke   # preflight, plus one live model test
+prloop '<PR URL>' --dry-run                    # compute only, no publish — check the output first
+prloop '<PR URL>'                              # publish comments for real
 ```
 
-PR URL 格式為 `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`。
+PR URL format: `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`.
 
-**強烈建議第一次先跑 `--dry-run`**，確認 finding 的行號與內容正確，再開放發佈。
+**Run `--dry-run` first.** Confirm finding line numbers and content are right before publishing.
 
-退出碼：`0` 兩軸皆無阻擋項目、`2` 有未滿足的驗收條件或 critical/high 問題、`1` 致命錯誤。
+Exit codes: `0` no blockers on either axis, `2` unsatisfied acceptance criteria or critical/high
+findings, `1` fatal error.
 
-## 每次執行的產出
+## Per-Run Output
 
-`runs/<org>/<project>/<repo>/pr-<id>/iter-<N>-<時間戳>/`：
+`runs/<org>/<project>/<repo>/pr-<id>/iter-<N>-<timestamp>/`:
 
-| 檔案 | 內容 |
+| File | Content |
 | --- | --- |
-| `context.json` | PR 資訊、iteration、納入與略過的檔案清單 |
-| `finder-prompt.md` | 送給模型的完整 prompt |
-| `finder-*-raw.txt` | 每顆模型的原始輸出（debug 幻覺與格式問題用） |
-| `requirement.json` | 需求軸結果：work items、逐條判定、範圍外變更 |
-| `static.json` / `static-findings.json` | 靜態工具原始結果與 triage 後的 findings |
-| `skeptic.json` | 每筆 finding 的對抗驗證判定與理由 |
-| `requirement-prompt.md` / `requirement-raw.txt` | 需求軸的 prompt 與原始輸出 |
-| `findings.json` | 定位後的 findings：inline / 未達門檻 / 無法定位 |
-| `publish.json` | 實際發佈結果與失敗原因 |
+| `context.json` | PR info, iteration, included and skipped file lists |
+| `finder-prompt.md` | The full prompt sent to the model |
+| `finder-*-raw.txt` | Raw output per model (for debugging hallucinations and format issues) |
+| `requirement.json` | Requirement axis results: work items, per-criterion verdicts, out-of-scope changes |
+| `static.json` / `static-findings.json` | Raw static tool results and post-triage findings |
+| `skeptic.json` | Adversarial verification verdict and reasoning per finding |
+| `requirement-prompt.md` / `requirement-raw.txt` | Requirement axis prompt and raw output |
+| `findings.json` | Located findings: inline / below threshold / unlocatable |
+| `publish.json` | Actual publish results and failure reasons |
 
-## 參數
+## Settings
 
-全部為環境變數、全部選填，詳見 `.env.example`。常用的幾個：
+All environment variables, all optional. See `.env.example`. The common ones:
 
-| 變數 | 預設 | 說明 |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `PRR_ADO_PAT` | - | PAT，需 Code (Read & Write) scope。不設則走 az CLI |
-| `PRR_AUTH_MODE` | `auto` | `auto`（有 PAT 用 PAT，否則 az）｜`pat`｜`azcli` |
-| `PRR_LLM_BASE_URL` | `http://localhost:4000/v1` | OpenAI 相容 endpoint |
-| `PRR_FINDER_MODELS` | `qwen3-coder` | 逗號分隔。M3 起請填多顆不同家族的模型 |
-| `PRR_MAX_INLINE_COMMENTS` | 10 | 程式碼軸的 inline 留言上限 |
-| `PRR_MAX_INLINE_REQ_COMMENTS` | 3 | 需求軸的 inline 留言上限（與程式碼軸各自獨立） |
-| `PRR_REQ_MODEL` | 同 finder | 需求軸模型。驗收條件長時建議指定較強的模型 |
-| `PRR_SKIP_REQUIREMENT` | - | 1 = 跳過需求軸 |
-| `PRR_MIN_INLINE_SEVERITY` | `medium` | 低於此嚴重度只進 summary，不留 inline |
-| `PRR_DRY_RUN` | - | 1 = 只計算不發佈 |
-| `PRR_POST_STATUS` | - | 1 = 同時回報 PR status（需搭配 branch policy 才會擋 merge） |
-| `PRR_LLM_STRUCTURED` | 1 | 0 = 不送 `response_format`（後端 schema 支援有問題時） |
+| `PRR_ADO_PAT` | - | PAT, needs Code (Read & Write) scope. Unset → az CLI |
+| `PRR_AUTH_MODE` | `auto` | `auto` (PAT if present, else az) ｜ `pat` ｜ `azcli` |
+| `PRR_LLM_BASE_URL` | `http://localhost:4000/v1` | OpenAI-compatible endpoint |
+| `PRR_FINDER_MODELS` | `qwen3-coder` | Comma-separated. From M3 on, use several models from different families |
+| `PRR_MAX_INLINE_COMMENTS` | 10 | Inline comment cap for the code axis |
+| `PRR_MAX_INLINE_REQ_COMMENTS` | 3 | Inline comment cap for the requirement axis (independent of the code axis) |
+| `PRR_REQ_MODEL` | same as finder | Requirement axis model. Use a stronger model for long acceptance criteria |
+| `PRR_SKIP_REQUIREMENT` | - | 1 = skip the requirement axis |
+| `PRR_MIN_INLINE_SEVERITY` | `medium` | Below this severity, summary only, no inline |
+| `PRR_DRY_RUN` | - | 1 = compute only, no publish |
+| `PRR_POST_STATUS` | - | 1 = also report PR status (needs a branch policy to block merge) |
+| `PRR_LLM_STRUCTURED` | 1 | 0 = don't send `response_format` (for backends with broken schema support) |
 
-## 留言行為
+## Comment Behavior
 
-- **一則 sticky summary**：原地更新，不會每次推送都新增一則。狀態設為 closed，不會觸發
-  「comment resolution required」policy。
-- **少量 inline 留言**：狀態為 active，帶 `changeTrackingId` 與 `iterationContext`，
-  推送新 commit 後 ADO 會自行追蹤位置。
-- **不重複留言**：每則留言嵌入 finding 指紋，重跑時已留過的自動略過。
-- **乾淨的 PR 會安靜**：沒發現問題時只更新 summary 說明，不製造噪音。
-- 風格、命名、格式問題一律不留言 —— 那是 linter 的工作（M4 會納入）。
+- **One sticky summary**: updated in place, not a new comment on every push. Set to closed, so it
+  won't trigger the "comment resolution required" policy.
+- **A few inline comments**: active status, carrying `changeTrackingId` and `iterationContext`, so
+  ADO tracks their position itself after new commits.
+- **No duplicate comments**: each comment embeds a finding fingerprint; reruns skip anything
+  already posted.
+- **Clean PRs stay quiet**: nothing found → summary just says so. No noise.
+- Style, naming, and formatting issues never get a comment — that's the linter's job (added in M4).
 
-## 多模型對抗驗證
+## Multi-Model Adversarial Verification
 
-單顆開源模型做 code review 的誤報率很高,所以精度不是靠「叫模型小心一點」得來的——
-finder 反而被要求**全部回報、包含不確定的**(要求模型自我審查會明顯傷害 recall),
-過濾交給下游三道獨立的關卡:
+A single open-source model doing code review has a high false positive rate, so precision does not
+come from "telling the model to be careful" — the finder is instead told to **report everything,
+including uncertain findings** (asking a model to self-review measurably hurts recall). Filtering
+happens downstream, in three independent gates:
 
-1. **錨定**:引用不存在的程式碼 = 幻覺,在定位階段就被攔掉。
-2. **對抗驗證(skeptic)**:每個 finding 交給**不同家族**的模型,任務是「推翻它」而不是
-   「評估它」。被問「這對嗎?」的驗證者會附和;被要求「證明這是錯的」才會真的去檢查。
-   而且 skeptic **看不到 finder 的推理過程**,只看到指控和程式碼——共用推理會造成錨定效應,
-   驗證者會順著原作者的思路走而不是重新判斷。
-3. **共識裁決**:要留 inline 留言需要佐證——**兩個模型獨立發現**,或**通過對抗驗證**。
-   單一模型提出且沒被驗證過的 finding 只會列在 summary,不佔用留言額度。
+1. **Anchoring**: quoting code that doesn't exist = hallucination, caught during the locate step.
+2. **Adversarial verification (skeptic)**: each finding goes to a model from a **different family**,
+   tasked with *refuting* it, not *evaluating* it. A verifier asked "is this right?" agrees; only one
+   told "prove this is wrong" actually checks. The skeptic also **can't see the finder's reasoning**,
+   only the claim and the code — sharing reasoning creates an anchoring effect and the verifier follows
+   the original author's path instead of judging afresh.
+3. **Consensus verdict**: an inline comment requires corroboration — **two models finding it
+   independently**, or **surviving adversarial verification**. A finding from one model with no
+   verification only appears in the summary and doesn't use comment quota.
 
-幾個刻意的不對稱設計:
+A few deliberate asymmetries:
 
-- skeptic 可以**下修**嚴重度,不能上修。finder 決定上限,讓驗證者能加碼會把它存在的意義
-  (對抗附和傾向)還回去。
-- skeptic 壞掉或回傳無法解析時 **fail-open**(finding 存活)。壞掉的驗證者不該有刪除
-  真實 bug 的權力;共識裁決那關仍然會要求佐證。
-- 錨定失敗則相反,是 **fail-closed**。貼錯行的傷害大於漏報。
+- The skeptic can **lower** severity, never raise it. The finder sets the ceiling; letting the
+  verifier escalate would hand back exactly what it exists to counter (agreement bias).
+- If the skeptic breaks or returns unparseable output, **fail open** (the finding survives). A broken
+  verifier shouldn't have the power to delete real bugs; the consensus gate still demands corroboration.
+- Anchoring failure is the opposite: **fail closed**. A wrong-line comment does more damage than a miss.
 
-設定 `PRR_SKEPTIC_MODELS` 才會啟用。**務必與 finder 用不同家族的模型**——同家族的驗證者
-共用 finder 的盲點,最該抓到的錯誤反而會被確認。`doctor` 會檢查並警告這件事。
+Enabled only when `PRR_SKEPTIC_MODELS` is set. **Use a different model family from the finder** —
+a same-family verifier shares the finder's blind spots and will confirm exactly the errors you most
+need caught. `doctor` checks this and warns.
 
 ## Runner
 
-兩種:
+Two options:
 
-- **`openai`(預設)**:直接打 OpenAI 相容 endpoint(LiteLLM proxy / vLLM / Ollama)。
-  支援 **guided decoding**,schema 由推論引擎在 token 層強制——這是弱模型能穩定輸出
-  合法 JSON 的關鍵。
-- **`opencode`**:透過 opencode CLI,沿用你既有的 provider 設定。
-  **但 opencode 不會把 `response_format` 傳給後端**,schema 從「引擎強制」降級為
-  「prompt 要求」,弱模型的格式服從度會下降。
+- **`openai` (default)**: talks directly to an OpenAI-compatible endpoint (LiteLLM proxy / vLLM /
+  Ollama). Supports **guided decoding**, where the inference engine enforces the schema at the token
+  level — the key to weak models emitting valid JSON reliably.
+- **`opencode`**: goes through the opencode CLI, reusing your existing provider config.
+  **But opencode doesn't pass `response_format` to the backend**, so the schema drops from
+  "engine-enforced" to "prompt-requested", and weak models comply with the format less reliably.
 
-用 opencode 前先跑 `npm run setup` 安裝 agent 定義(所有工具關閉——審查所需的內容
-全部由 prloop 注入,執行環境裡沒有目標專案的原始碼可讀)。
+Before using opencode, run `npm run setup` to install the agent definition (all tools disabled —
+everything the review needs is injected by prloop, and the execution environment has no target
+project source to read).
 
 ```bash
 npm run setup
 PRR_RUNNER=opencode prloop '<PR URL>' --dry-run
 ```
 
-## 靜態分析（需要工作目錄）
+## Static Analysis (Needs a Working Directory)
 
-linter 需要原始碼落在磁碟上，但 prloop 平常是直接從 Azure DevOps 讀 blob 的。
-因此靜態分析需要 `PRR_WORKDIR` 指向 PR 來源分支的 checkout——在 pipeline 中
-就是 agent 自己的工作目錄。沒設就整段跳過，並在 summary 說明原因。
+Linters need source on disk, but prloop normally reads blobs straight from Azure DevOps. So static
+analysis needs `PRR_WORKDIR` pointing at a checkout of the PR source branch — in a pipeline, that's
+the agent's own working directory. Unset → the whole stage is skipped, with the reason in the summary.
 
-工具結果**先過 diff filter**（只留落在本次變更行上的），再依工具特性分三層：
+Tool results **go through the diff filter first** (only findings on changed lines survive), then split
+three ways by tool character:
 
-| 層級 | 工具 | 處理方式 |
+| Tier | Tools | Handling |
 | --- | --- | --- |
-| **事實** | `tsc`、`mypy` | 型別錯誤是事實，直接留言，不叫模型重新推導 |
-| **triage** | `bandit`、`PMD`、`SpotBugs`、`ruff`、`eslint` | 有 recall 但誤報高，交由模型判斷實際脈絡下是否成立 |
-| **抑制** | `checkstyle`、格式類規則 | 永不留言，只在 summary 計數 |
+| **Fact** | `tsc`, `mypy` | Type errors are facts. Comment directly, no model re-derivation |
+| **Triage** | `bandit`, `PMD`, `SpotBugs`, `ruff`, `eslint` | Good recall, high false positives. Model decides whether it holds in actual context |
+| **Suppressed** | `checkstyle`, formatting rules | Never comment, count in summary only |
 
-triage 那層是實證最強的混合做法（Semgrep 誤報 560 → 64）。工具負責 recall——
-它不會忘記任何一個樣式；模型補上樣式比對看不到的脈絡：這個值真的來自外部嗎、
-前面的檢查是不是讓這條路徑走不到、這個 API 用法在這個框架下是不是慣例。
+The triage tier is the best empirically-supported hybrid (Semgrep false positives 560 → 64). The tool
+handles recall — it never forgets a pattern; the model supplies the context pattern matching can't see:
+does this value really come from outside, does an earlier check make this path unreachable, is this API
+usage idiomatic in this framework.
 
-**未設 `PRR_TRIAGE_MODEL` 時，triage 層的結果會被丟棄而不是直接留言。** 這是刻意的
-fail-closed：未經判定的高誤報結果就是噪音。
+**When `PRR_TRIAGE_MODEL` is unset, triage tier results are discarded rather than commented.** That's
+deliberate fail-closed: unjudged high-false-positive output is noise.
 
-SpotBugs 需要編譯後的 class，找不到 `target/classes` 就跳過——對著過期的 class 掃描
-會回報早就修好的問題。
+SpotBugs needs compiled classes; no `target/classes` → skipped. Scanning stale classes reports problems
+that were fixed long ago.
 
-## 增量審查與留言生命週期
+## Incremental Review and Comment Lifecycle
 
 ```bash
-prloop '<PR URL>' --since auto    # 只審查上次之後的新 commit
+prloop '<PR URL>' --since auto    # review only commits since last time
 ```
 
-`--since auto` 從我們自己的 summary 留言裡讀回上次審查的 iteration（狀態存在 PR 上，
-不存在磁碟上——這樣 pipeline agent、你的筆電、cron 機器不需要共用檔案系統）。
+`--since auto` reads the last reviewed iteration back out of our own summary comment (state lives on
+the PR, not on disk — so the pipeline agent, your laptop, and a cron box don't need a shared filesystem).
 
-每次發佈前還會做兩件事：
+Two more things happen before each publish:
 
-- **自動關閉過時留言**：我們自己貼的、指向的程式碼已經不存在的 thread 會被標為 fixed。
-  判定條件刻意收得很窄——錯誤關閉一個還活著的問題，比留一則過時留言讓人手動關掉更糟。
-- **記錄 dismissal**：被人工標記為 wontFix / byDesign 的留言會被記錄下來。
-  這是未來收斂規則的原始素材——某一類 findings 老是被駁回，就代表不該再回報。
-  現在只記錄不行動：用少量樣本去建排除規則會過度擬合。
+- **Auto-close stale comments**: threads we posted whose target code no longer exists get marked fixed.
+  The criteria are deliberately narrow — wrongly closing a live issue is worse than leaving a stale
+  comment for someone to close by hand.
+- **Log dismissals**: comments manually marked wontFix / byDesign get recorded. This is the raw material
+  for future rule tuning — a finding category that keeps getting rejected shouldn't be reported anymore.
+  For now it only logs, no action: building exclusion rules from a small sample overfits.
 
-## 審查規則（rules/）
+## Review Rules (rules/)
 
-`rules/*.md` 是可直接編輯的審查規則,每份用 frontmatter 的 `applyTo` 指定 glob。
-**只有 glob 命中本次變更檔案的規則才會進 prompt**——沒改到 Java 就完全不載入 Java 規則,
-所以規則集可以持續長大而不會撐爆每次的 prompt。
+`rules/*.md` are directly editable review rules; each declares a glob via frontmatter `applyTo`.
+**Only rules whose glob matches a changed file enter the prompt** — no Java changes means Java rules
+never load, so the rule set can keep growing without blowing up every prompt.
 
 ```markdown
 ---
 applyTo: "**/*.java"
 ---
-# Java 審查規則
+# Java review rules
 ...
 ```
 
-內建 `_base.md`(全語言適用)收錄《Refactoring》第 3 章的 12 個 code smell,
-並綁定兩條約束:repo 自己的規範永遠覆蓋 baseline、每個 smell 都是判斷題而非硬性違規
-(severity 上限 medium)。第二條是防過度回報的內建機制。
+The built-in `_base.md` (all languages) carries the 12 code smells from chapter 3 of *Refactoring*,
+bound to two constraints: the repo's own conventions always override the baseline, and every smell is
+a judgment call rather than a hard violation (severity capped at medium). The second constraint is the
+built-in guard against over-reporting.
 
-用 `PRR_RULES_DIR` 可指向別處的規則目錄。
+`PRR_RULES_DIR` points at a rules directory elsewhere.
 
 ## Troubleshooting
 
-**先跑 `npx tsx scripts/doctor.ts '<PR URL>' --smoke`**，多數問題會直接指出修法。
+**Run `npx tsx scripts/doctor.ts '<PR URL>' --smoke` first.** It names the fix for most problems.
 
-**憑證問題請直接跑 `tlsfix`**——它把所有可能的憑證來源實際連一次，告訴你哪個能用：
+**For certificate problems, run `tlsfix`** — it actually connects using every possible certificate
+source and tells you which one works:
 
 ```bash
 npx tsx scripts/tlsfix.ts '<PR URL>'
 ```
 
-連不上而 doctor 說不清楚時，用 **probe** 直測：
+When you can't connect and doctor isn't clear, use **probe** to test directly:
 
 ```bash
 npx tsx scripts/probe.ts '<PR URL>'
 ```
 
-它會攤開 doctor 隱藏起來的東西：每個設定值**實際來自哪裡**（`.env` / shell 環境變數 /
-預設值）、組出來的完整 URL、原始 HTTP 狀態與**伺服器自己的錯誤訊息**，最後逐一測試
-各 api-version 找出這台伺服器接受哪個。
+It unfolds what doctor hides: **where each setting actually came from** (`.env` / shell env var /
+default), the full assembled URL, raw HTTP status and **the server's own error message**, and finally
+tests each api-version to find which one this server accepts.
 
-⚠️ **`.env` 永遠不會覆蓋已存在的環境變數**（避免蓋掉 CI 注入的值）。所以 shell 裡若有
-`export PRR_XXX=...`，`.env` 的同名設定會被靜默忽略。probe 的第 1 節會標出這種情況。
+⚠️ **`.env` never overrides an existing environment variable** (so it can't clobber CI-injected values).
+So if your shell has `export PRR_XXX=...`, the same key in `.env` is silently ignored. Section 1 of
+probe flags this.
 
-- **on-prem（Azure DevOps Server）連不上。** 先跑 `doctor <PR URL>`，它會印出 **API base**
-  與**實際請求位址**——這兩行就能看出問題。API 位址是從你給的 PR URL 推導的，
-  `https://tfs.corp.com/tfs/{collection}/{project}/_git/...` 會正確解析出
-  `https://tfs.corp.com/tfs/{collection}`（含虛擬目錄）。若仍不對，用 `PRR_ADO_BASE_URL` 覆蓋。
-- **on-prem 出現 api-version 不支援。** 各版本上限不同：Server 2019 → `5.0`、
-  2020 → `6.0`、2022 → `7.0`、雲端 → `7.1`。設 `PRR_ADO_API_VERSION` 調整。
-- **`ECONNREFUSED` / 連線被拒。** 最常見的原因是**公司 proxy**。
-  **Node 內建的 `fetch` 不會讀 `HTTP_PROXY` / `HTTPS_PROXY`**（curl、git、pip 都會讀，
-  所以那些工具能通、Node 卻不行）。prloop 會自己讀這些變數並套用，但前提是變數有設。
+- **On-prem (Azure DevOps Server) won't connect.** Run `doctor <PR URL>` first — it prints the
+  **API base** and the **actual request URL**. Those two lines usually show the problem. The API address
+  is derived from the PR URL you gave;
+  `https://tfs.corp.com/tfs/{collection}/{project}/_git/...` correctly resolves to
+  `https://tfs.corp.com/tfs/{collection}` (virtual directory included). Still wrong? Override with
+  `PRR_ADO_BASE_URL`.
+- **On-prem reports an unsupported api-version.** Each version has a different ceiling: Server 2019 →
+  `5.0`, 2020 → `6.0`, 2022 → `7.0`, cloud → `7.1`. Set `PRR_ADO_API_VERSION`.
+- **`ECONNREFUSED` / connection refused.** Most often a **corporate proxy**.
+  **Node's built-in `fetch` does not read `HTTP_PROXY` / `HTTPS_PROXY`** (curl, git, and pip all do,
+  which is why those work and Node doesn't). prloop reads these variables itself and applies them, but
+  only if they're set.
 
   ```bash
   export HTTPS_PROXY=http://proxy.corp:8080
-  # 內部主機（自架模型端點等）必須繞過 proxy，否則會被導去外部出口
+  # Internal hosts (self-hosted model endpoints etc.) must bypass the proxy, or they get routed to the external egress
   export NO_PROXY=localhost,127.0.0.1,.corp.local
   ```
 
-  **要寫在 `.env` 請用 `PRR_` 版本**：`.env` 不覆蓋既有的環境變數，所以 shell 裡
-  已經有 `HTTPS_PROXY` 時，`.env` 裡的同名設定不會生效也不會報錯。
-  `PRR_HTTPS_PROXY` / `PRR_NO_PROXY` / `PRR_HTTP_PROXY` 優先於慣用名稱，
-  在 `.env` 裡設一定生效。`probe` 第 1 節會顯示每個值實際來自哪裡。
+  **To put these in `.env`, use the `PRR_` versions**: `.env` doesn't override existing environment
+  variables, so if the shell already has `HTTPS_PROXY`, the same key in `.env` neither takes effect nor
+  errors. `PRR_HTTPS_PROXY` / `PRR_NO_PROXY` / `PRR_HTTP_PROXY` take priority over the conventional
+  names and always work in `.env`. Section 1 of `probe` shows where each value actually came from.
 
-  `probe` 的第 1 節會顯示目前的 proxy 設定，第 4 節會標明是直連還是經由 proxy——
-  有 proxy 時 TLS 檢測會走 CONNECT 隧道，不會把防火牆的拒絕誤判成憑證問題。
-- **`proxy 拒絕 CONNECT：... 403`，但 git 對同一主機卻是通的。**
-  多半是 **proxy 依 User-Agent 過濾**：放行瀏覽器與 git，擋掉陌生的用戶端。
-  看起來像「這個主機被封鎖」，其實主機沒事，被拒的是用戶端身分。
+  Section 1 of `probe` shows the current proxy settings; section 4 says whether the connection is direct
+  or via proxy — with a proxy, TLS detection goes through a CONNECT tunnel, so a firewall rejection isn't
+  misread as a certificate problem.
+- **`proxy refused CONNECT: ... 403`, but git reaches the same host fine.**
+  Usually **proxy filtering by User-Agent**: browsers and git allowed, unfamiliar clients blocked. It
+  looks like "this host is blocked", but the host is fine — the client identity is what got rejected.
 
-  `probe` 的第 4b 節會實測五種標頭組合，告訴你這台 proxy 放行哪種。prloop 預設
-  誠實地送出 `prloop/0.1`；若你的 proxy 只放行特定字串，可自行決定是否配合：
+  Section 4b of `probe` tests five header combinations and tells you which one this proxy allows. prloop
+  honestly sends `prloop/0.1` by default; if your proxy only allows specific strings, it's your call
+  whether to play along:
   ```bash
   export PRR_USER_AGENT="git/2.34.1"
   ```
-  這是針對 proxy 政策的權宜做法——正規解法是請網管把工具的出口加入允許清單。
+  This is a workaround for proxy policy — the proper fix is asking network admin to allowlist the tool's
+  egress.
 
-  最有用的線索是**你的 git 是怎麼通的**:既然能對 Azure Repos 推拉程式碼，就存在
-  一條可用路由。`git config --global --get https.proxy` 若與 `HTTPS_PROXY` 不同就改用它；
-  git 沒設 proxy 卻能通，代表該主機應直連，把它加進 `NO_PROXY`。
-  回 `407` 則是 proxy 要求認證，改用 `http://使用者:密碼@主機:埠`。
-- **TLS 憑證錯誤（企業 TLS 攔截）。** 瀏覽器能開但工具連不上，幾乎都是這個。
-  **Node 有自己內建的 CA 清單，不讀作業系統的信任存放區**——所以公司的攔截設備
-  （Zscaler、Blue Coat 等）重簽的憑證，瀏覽器接受、Node 不接受。
+  The most useful clue is **how your git gets through**: if it can push and pull against Azure Repos, a
+  working route exists. If `git config --global --get https.proxy` differs from `HTTPS_PROXY`, use that
+  instead; if git has no proxy set and still works, that host should be direct — add it to `NO_PROXY`.
+  A `407` means the proxy wants auth: use `http://user:password@host:port`.
+- **TLS certificate errors (corporate TLS interception).** Browser opens it, tool can't connect — almost
+  always this. **Node has its own built-in CA list and does not read the OS trust store** — so a
+  certificate re-signed by your company's interception appliance (Zscaler, Blue Coat, etc.) is accepted
+  by the browser and rejected by Node.
 
-  `npx tsx scripts/probe.ts '<PR URL>'` 的「TLS 握手」那一節會把伺服器實際出示的
-  憑證鏈印出來。若最末端的簽發者不是公開 CA（Microsoft、DigiCert 之類），就確定是攔截。
+  The "TLS handshake" section of `npx tsx scripts/probe.ts '<PR URL>'` prints the certificate chain the
+  server actually presented. If the last issuer isn't a public CA (Microsoft, DigiCert, and the like),
+  it's interception, confirmed.
 
-  **最快的解法**是讓 probe 自己把憑證抓出來：
+  **The fastest fix** is letting probe extract the certificate itself:
 
   ```bash
   npx tsx scripts/probe.ts '<PR URL>' --export-ca ./corporate-ca.pem
-  export NODE_EXTRA_CA_CERTS=$PWD/corporate-ca.pem
+  # then put the path in .env as PRR_CA_CERTS, and run via ./bin/prloop
   ```
 
-  驗證失敗時 probe 會把伺服器實際出示的憑證鏈寫成 PEM，省去跟 IT 要檔案的來回。
-  ⚠️ 這份是從連線當下取得的——若攔截你的不是你信任的對象就不該採用；正式使用
-  建議改用 IT 提供的公司根 CA。
+  On verification failure, probe writes the chain the server actually presented as PEM, saving a
+  round-trip to IT for the file.
+  ⚠️ This comes from the connection as it happened — don't adopt it if whoever intercepted you isn't
+  someone you trust. For production use, prefer the corporate root CA from IT.
 
-  **Node 24 以上最簡單**——直接用系統信任存放區，不需要憑證檔：
+  **Simplest on Node 24+** — use the system trust store directly, no certificate file:
 
   ```bash
   export NODE_OPTIONS=--use-system-ca
   ```
 
-  版本差異（皆為實測）：
+  Version differences (all measured):
 
-  | Node 版本 | `--use-system-ca` | 放進 `NODE_OPTIONS` |
+  | Node version | `--use-system-ca` | Works in `NODE_OPTIONS` |
   | --- | --- | --- |
-  | 24+ | ✅ | ✅ 可以，搭配 `npx tsx` 最方便 |
-  | 22.15–23.x | ✅ | ❌ 不允許，只能 `node --use-system-ca` 直接跑 |
-  | 22.14 以下 | ❌ 沒有這個旗標 | — |
+  | 24+ | ✅ | ✅ Yes, easiest with `npx tsx` |
+  | 22.15–23.x | ✅ | ❌ Not allowed, only `node --use-system-ca` directly |
+  | 22.14 and below | ❌ No such flag | — |
 
-  這個旗標只是讓 Node 改讀作業系統的信任存放區，**不會放行未受信任的憑證**
-  （對自簽憑證實測仍然拒絕）。
+  This flag only makes Node read the OS trust store; it **does not accept untrusted certificates**
+  (measured: still rejects self-signed).
 
-  **實際案例的完整解法**（企業 TLS 攔截環境）：攔截設備只出示重簽後的站台憑證，
-  中繼憑證既不在握手中、也不在系統憑證包裡。從瀏覽器匯出那張中繼憑證即可：
-  開啟該網站 → 網址列鎖頭 → 憑證 → 憑證路徑 → 選**中間那張** → 匯出為 Base64/PEM，
-  然後 `export NODE_EXTRA_CA_CERTS=/path/to/exported.pem`。
-  `tlsfix` 會自動判斷你是否屬於這種情況。
+  **Full fix for a real case** (corporate TLS interception environment): the appliance presented only the
+  re-signed site certificate — the intermediate was neither in the handshake nor in the system CA bundle.
+  Export that intermediate from the browser: open the site → padlock in the address bar → Certificate →
+  Certification Path → pick **the middle one** → export as Base64/PEM, then
+  `export NODE_EXTRA_CA_CERTS=/path/to/exported.pem`.
+  `tlsfix` detects automatically whether this is your case.
 
-  **若 `az` / `curl` / `git` 在同一台機器上都能通、只有這個工具不行**，原因幾乎必定是
-  信任來源不同：Python 與 curl 讀 `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` 指定的憑證包，
-  Node 只認自己內建的清單。把同一個檔案指給 Node 即可：
+  **If `az` / `curl` / `git` all work on the same machine and only this tool doesn't**, the cause is
+  almost certainly a different trust source: Python and curl read the CA bundle at
+  `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE`; Node only knows its own built-in list. Point Node at the same
+  file:
 
   ```bash
-  export NODE_EXTRA_CA_CERTS="$REQUESTS_CA_BUNDLE"   # 通常是 /etc/ssl/certs/ca-certificates.crt
+  export NODE_EXTRA_CA_CERTS="$REQUESTS_CA_BUNDLE"   # usually /etc/ssl/certs/ca-certificates.crt
   ```
 
-  `bin/prloop` 會在啟動前自動做這件事（`NODE_EXTRA_CA_CERTS` 必須在 node 啟動前設定，
-  程式內部改不了），所以用 wrapper 執行時不需要手動設。直接跑 `npx tsx` 則要自己設。
+  `bin/prloop` does this automatically at startup (`NODE_EXTRA_CA_CERTS` must be set before node starts;
+  the program can't change it from inside), so the wrapper needs no manual setup. Running `npx tsx`
+  directly does.
 
-  確認公司 CA 是否在該檔案裡：
+  Check whether your corporate CA is in that file:
   ```bash
   awk '/BEGIN/{c=""} {c=c $0 RS} /END/{print c | "openssl x509 -noout -subject"; close("openssl x509 -noout -subject")}' \
-    /etc/ssl/certs/ca-certificates.crt | grep -i 你們公司名稱
+    /etc/ssl/certs/ca-certificates.crt | grep -i your-company-name
   ```
 
-  確認用途可以暫時 `NODE_TLS_REJECT_UNAUTHORIZED=0`，但**不要留著**——那會關閉所有
-  憑證驗證，等於接受任何中間人。確認完立刻改回 `NODE_EXTRA_CA_CERTS`。
-- **203 / 登入頁錯誤。** PAT 無效或缺少 scope（需要 Code Read & Write）。若走 az CLI，
-  多半是 `az login` 過期或登入到錯的 tenant，重跑 `az login` 即可。
-- **az 相關錯誤。** `doctor` 會顯示目前的認證模式與 az 登入身分。要強制走某一種認證，
-  設 `PRR_AUTH_MODE=pat` 或 `azcli`。az 的 token 會在程序內快取，不會每次請求都呼叫 az。
-- **留言貼到錯誤的行。** 這正是本工具要根治的問題。若仍發生，檢查 `findings.json` 中該筆
-  的 `anchor`，並比對 `runs/` 內的 `finder-*-raw.txt`：若模型的 quote 與檔案內容不同
-  （例如自行改寫了縮排或內容），錨定會失敗而非貼錯位置。真的貼錯請附上該次 run 目錄回報。
-- **大量 findings 落在「無法定位」。** 通常是模型不照指示逐字複製 quote。優先確認
-  `PRR_LLM_STRUCTURED=1` 且後端真的支援 guided decoding；弱模型在沒有 schema 強制時
-  格式服從度會明顯下降。
-- **模型輸出無法解析。** 後端未支援 `response_format`。改用 vLLM（xgrammar guided
-  decoding）或 LiteLLM proxy；或設 `PRR_LLM_STRUCTURED=0` 觀察原始輸出再調整。
-- **留言太多。** 調低 `PRR_MAX_INLINE_COMMENTS`，或把 `PRR_MIN_INLINE_SEVERITY` 提到 `high`。
-- **想擋住 merge。** 設 `PRR_POST_STATUS=1`，並在 branch policy 加入 genre `prloop` /
-  name `ai-review` 的 status 檢查。不要用 bot 投 -10 票的方式，會與 reviewer policy 打架。
-- **PR 很大導致部分檔案沒被審查。** summary 會列出未納入的檔案。調高 `PRR_MAX_DIFF_CHARS`
-  或提高模型 context 上限。
+  To confirm the cause you can temporarily set `NODE_TLS_REJECT_UNAUTHORIZED=0`, but **don't leave it** —
+  it disables all certificate verification, which means accepting any man-in-the-middle. Switch back to
+  `NODE_EXTRA_CA_CERTS` as soon as you've confirmed.
+- **203 / login page error.** PAT invalid or missing scope (needs Code Read & Write). On az CLI, usually
+  an expired `az login` or the wrong tenant — rerun `az login`.
+- **az errors.** `doctor` shows the current auth mode and az login identity. To force one auth method,
+  set `PRR_AUTH_MODE=pat` or `azcli`. az tokens are cached in-process, not fetched per request.
+- **Comment landed on the wrong line.** This is the exact problem the tool exists to fix. If it still
+  happens, check that finding's `anchor` in `findings.json` and compare against `finder-*-raw.txt` in
+  `runs/`: if the model's quote differs from the file content (rewritten indentation or content, say),
+  anchoring fails rather than misplacing. If it's genuinely misplaced, report it with that run directory.
+- **Lots of findings land in "unlocatable".** Usually the model isn't copying quotes verbatim as
+  instructed. First confirm `PRR_LLM_STRUCTURED=1` and that the backend really supports guided decoding;
+  weak models comply with formats much less reliably without schema enforcement.
+- **Model output won't parse.** The backend doesn't support `response_format`. Switch to vLLM (xgrammar
+  guided decoding) or a LiteLLM proxy; or set `PRR_LLM_STRUCTURED=0` to inspect the raw output and adjust.
+- **Too many comments.** Lower `PRR_MAX_INLINE_COMMENTS`, or raise `PRR_MIN_INLINE_SEVERITY` to `high`.
+- **Want to block merge.** Set `PRR_POST_STATUS=1` and add a status check with genre `prloop` / name
+  `ai-review` to the branch policy. Don't have a bot cast a -10 vote — it fights the reviewer policy.
+- **Big PR, some files not reviewed.** The summary lists what was left out. Raise `PRR_MAX_DIFF_CHARS`
+  or the model's context limit.
 
-## 本地模式（不需要 ADO 憑證）
+## Local Mode (No ADO Credentials Needed)
 
-從 git 分支建立 review context，用來在開 PR 前先審、或在沒有 ADO 存取權時驗證流程。
-走的是**完全相同的** diff 與錨定程式碼路徑。
+Builds review context from git branches — review before opening a PR, or validate the flow without ADO
+access. Uses the **exact same** diff and anchoring code path.
 
 ```bash
-# 產生 finder 會收到的完整 prompt
+# Generate the full prompt the finder would receive
 npx tsx scripts/local-review.ts prompt <repo> <base> <head> [out.md]
 
-# 帶著 findings JSON 跑真實的錨定與裁決，看每則留言會落在哪一行
+# Run real anchoring and verdicts against a findings JSON, to see which line each comment lands on
 npx tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json>
 ```
 
-## 開發
+## Development
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm run selftest    # 離線測試：diff、錨定、URL 解析、JSON 解析
-npm run check       # 兩者都跑
-npx tsx scripts/demo.ts  # 用假資料渲染留言，看留言長什麼樣（不連 ADO、不呼叫模型）
+npm run selftest    # offline tests: diff, anchoring, URL parsing, JSON parsing
+npm run check       # both
+npx tsx scripts/demo.ts  # render comments from fake data to see how they look (no ADO, no model calls)
 ```
 
-`scripts/selftest.ts` 是行號錨定的回歸網。**改動 `libs/diff.ts` 或 `anchoring/locate.ts`
-之後一定要跑**，其中的斷言直接對應「留言貼錯行」的各種成因。
+`scripts/selftest.ts` is the regression net for line anchoring. **Always run it after changing
+`libs/diff.ts` or `anchoring/locate.ts`** — its assertions map directly onto the causes of
+"comment on the wrong line".
 
-其中 `fixtures/seeded-pr.ts` 是一份植入已知缺陷的真實 PR（Python / Java / Next.js
-三語言），每個預期行號都用 `grep -n` 對真實檔案驗證過。它涵蓋四個關鍵邊界：
+Inside it, `fixtures/seeded-pr.ts` is a real PR seeded with known defects (Python / Java / Next.js),
+where every expected line number was verified against the real file with `grep -n`. It covers four
+critical boundaries:
 
-- 同一行在檔案中出現兩次且模型未給 context → **必須判定歧義，不得猜第一個**
-- 同樣的重複行但給了不同的 `context_before` → 必須分別錨定到正確的那一個
-- 模型引用了不存在的程式碼 → 必須攔下（錨定同時是幻覺過濾器）
-- 模型改寫了縮排 → 第二層匹配仍須定位成功
+- The same line appears twice in the file and the model gave no context → **must be ruled ambiguous,
+  must not guess the first one**
+- Same duplicate lines but with different `context_before` → must anchor to the correct one each time
+- The model quoted code that doesn't exist → must be blocked (anchoring is also the hallucination filter)
+- The model rewrote the indentation → the second matching pass must still locate it
 
-玩具測資（`a();`、`b();`）只能證明演算法會跑；這份 fixture 證明它在**看起來像真的
-程式碼**上會落在正確的行。
+Toy fixtures (`a();`, `b();`) only prove the algorithm runs; this fixture proves it lands on the right
+line in code **that looks real**.

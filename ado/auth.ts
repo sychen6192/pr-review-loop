@@ -43,19 +43,19 @@ async function getAzToken(): Promise<string> {
   ]);
   if (res.code !== 0) {
     const hint = /az login|not logged in|AADSTS/i.test(res.stderr)
-      ? "請先執行 az login"
-      : `az 回傳非零結束碼：${res.stderr.trim().slice(0, 300)}`;
-    throw new AuthError(`透過 az CLI 取得 token 失敗。${hint}`);
+      ? "Run az login first."
+      : `az exited non-zero: ${res.stderr.trim().slice(0, 300)}`;
+    throw new AuthError(`Failed to get token via az CLI. ${hint}`);
   }
 
   let parsed: AzTokenResponse;
   try {
     parsed = JSON.parse(res.stdout) as AzTokenResponse;
   } catch {
-    throw new AuthError(`無法解析 az 輸出：${res.stdout.slice(0, 300)}`);
+    throw new AuthError(`Cannot parse az output: ${res.stdout.slice(0, 300)}`);
   }
   if (!parsed.accessToken) {
-    throw new AuthError("az 輸出中沒有 accessToken");
+    throw new AuthError("No accessToken in az output");
   }
 
   // expires_on is epoch seconds; expiresOn is a local-time string whose format has varied
@@ -69,7 +69,7 @@ async function getAzToken(): Promise<string> {
   }
 
   cached = { token: parsed.accessToken, expiresAtMs };
-  logVerbose(`已透過 az CLI 取得 token，有效至 ${new Date(expiresAtMs).toISOString()}`);
+  logVerbose(`Got token via az CLI, valid until ${new Date(expiresAtMs).toISOString()}`);
   return parsed.accessToken;
 }
 
@@ -78,7 +78,7 @@ export async function authHeader(): Promise<string> {
 
   if (mode === "pat") {
     if (!ADO_PAT) {
-      throw new AuthError("PRR_AUTH_MODE=pat 但未設定 PRR_ADO_PAT");
+      throw new AuthError("PRR_AUTH_MODE=pat but PRR_ADO_PAT is not set");
     }
     return `Basic ${Buffer.from(`:${ADO_PAT}`).toString("base64")}`;
   }
@@ -91,18 +91,18 @@ export async function authHeader(): Promise<string> {
   if (ADO_PAT) return `Basic ${Buffer.from(`:${ADO_PAT}`).toString("base64")}`;
   if (await commandExists(AZ_BIN)) return `Bearer ${await getAzToken()}`;
   throw new AuthError(
-    "找不到可用的認證方式：未設定 PRR_ADO_PAT，且 PATH 中沒有 az CLI。" +
-      "請設定 PAT，或安裝 az CLI 後執行 az login。",
+    "No usable auth: PRR_ADO_PAT unset and no az CLI on PATH. " +
+      "Set a PAT, or install the az CLI and run az login.",
   );
 }
 
 /** Which mode auto-detection would land on. Used by doctor to report the effective setup. */
 export async function describeAuthMode(): Promise<string> {
-  if (ADO_AUTH_MODE === "pat") return ADO_PAT ? "pat（已設定 PAT）" : "pat（但缺少 PAT）";
+  if (ADO_AUTH_MODE === "pat") return ADO_PAT ? "pat (PAT set)" : "pat (PAT missing)";
   if (ADO_AUTH_MODE === "azcli") {
-    return (await commandExists(AZ_BIN)) ? "azcli（az 可用）" : "azcli（但找不到 az）";
+    return (await commandExists(AZ_BIN)) ? "azcli (az available)" : "azcli (az not found)";
   }
-  if (ADO_PAT) return "auto → pat（偵測到 PRR_ADO_PAT）";
-  if (await commandExists(AZ_BIN)) return "auto → azcli（未設 PAT，偵測到 az CLI）";
-  return "auto → 無可用認證";
+  if (ADO_PAT) return "auto → pat (PRR_ADO_PAT detected)";
+  if (await commandExists(AZ_BIN)) return "auto → azcli (no PAT, az CLI detected)";
+  return "auto → no usable auth";
 }

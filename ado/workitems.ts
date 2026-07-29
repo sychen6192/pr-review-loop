@@ -75,7 +75,7 @@ export async function getLinkedRequirements(ref: PrRef): Promise<LinkedRequireme
     .filter((n) => Number.isInteger(n) && n > 0);
 
   if (ids.length === 0) return { items: [], inheritedFrom: [] };
-  logVerbose(`PR 連結的 work items：${ids.join("、")}`);
+  logVerbose(`Work items linked to the PR: ${ids.join(", ")}`);
 
   const items = await fetchWorkItems(ref, ids);
   const inheritedFrom: number[] = [];
@@ -91,7 +91,7 @@ export async function getLinkedRequirements(ref: PrRef): Promise<LinkedRequireme
       if (p.acceptanceCriteria) {
         items.push(p);
         inheritedFrom.push(p.id);
-        logVerbose(`work item #${p.id}（${p.type}）提供 acceptance criteria`);
+        logVerbose(`work item #${p.id} (${p.type}) supplies the acceptance criteria`);
       }
     }
   }

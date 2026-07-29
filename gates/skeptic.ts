@@ -74,7 +74,7 @@ async function verifyOne(
     maxTokens: 2048,
   });
   if (res.error) {
-    logVerbose(`skeptic ${model} 呼叫失敗：${res.error}`);
+    logVerbose(`skeptic ${model} call failed: ${res.error}`);
     return { refuted: false, reason: "", confidence: 0, model, error: res.error };
   }
   return parseVerdict(res.text, model);
@@ -112,13 +112,13 @@ export async function runSkeptic(
   const outcomes = await Promise.all(jobs);
   const killed = outcomes.filter((o) => o.killed).length;
   log(
-    `skeptic：驗證 ${outcomes.length} 筆，推翻 ${killed} 筆、保留 ${outcomes.length - killed} 筆` +
-      `（每筆 ${SKEPTIC_ROUNDS} 輪，模型 ${SKEPTIC_MODELS.join("、")}）`,
+    `skeptic: verified ${outcomes.length}, refuted ${killed}, kept ${outcomes.length - killed}` +
+      ` (${SKEPTIC_ROUNDS} rounds each, models ${SKEPTIC_MODELS.join(", ")})`,
   );
   for (const o of outcomes) {
     if (!o.killed) continue;
     const why = o.verdicts.find((v) => v.refuted)?.reason ?? "";
-    logVerbose(`  推翻：${o.finding.file}:${o.finding.anchor?.startLine} — ${why.slice(0, 120)}`);
+    logVerbose(`  refuted: ${o.finding.file}:${o.finding.anchor?.startLine} — ${why.slice(0, 120)}`);
   }
   return outcomes;
 }
@@ -142,7 +142,7 @@ export function applyVerdicts(outcomes: SkepticOutcome[]): AnchoredFinding[] {
       .filter((s): s is Severity => s !== undefined && severityRank(s) > severityRank(f.severity));
     if (downgrades.length > 0) {
       const mildest = downgrades.reduce((a, b) => (severityRank(a) > severityRank(b) ? a : b));
-      logVerbose(`  嚴重度下修：${f.file}:${f.anchor?.startLine} ${f.severity} → ${mildest}`);
+      logVerbose(`  severity downgraded: ${f.file}:${f.anchor?.startLine} ${f.severity} → ${mildest}`);
       f.severity = mildest;
     }
     survivors.push(f);

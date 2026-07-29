@@ -83,9 +83,9 @@ export function dispatcherFor(url: string): Dispatcher | undefined {
       // Headers here ride on the CONNECT request itself, which is where the filtering
       // happens — setting a User-Agent only on the tunnelled request would be too late.
       cache.set(proxy, new ProxyAgent({ uri: proxy, headers: { "user-agent": USER_AGENT } }));
-      logVerbose(`使用 proxy：${redactProxy(proxy)}`);
+      logVerbose(`Using proxy: ${redactProxy(proxy)}`);
     } catch (e) {
-      logVerbose(`proxy 設定無法解析（${proxy}）：${e instanceof Error ? e.message : String(e)}`);
+      logVerbose(`Unparsable proxy config (${proxy}): ${e instanceof Error ? e.message : String(e)}`);
       cache.set(proxy, undefined);
     }
   }
@@ -112,5 +112,5 @@ export function proxySummary(): string {
   if (HTTPS_PROXY) parts.push(`HTTPS_PROXY=${redactProxy(HTTPS_PROXY)}`);
   if (HTTP_PROXY) parts.push(`HTTP_PROXY=${redactProxy(HTTP_PROXY)}`);
   if (NO_PROXY) parts.push(`NO_PROXY=${NO_PROXY}`);
-  return parts.length ? parts.join("｜") : "（未設定，直接連線）";
+  return parts.length ? parts.join(" | ") : "(not set, connecting directly)";
 }

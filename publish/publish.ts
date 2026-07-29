@@ -58,8 +58,8 @@ export async function publish(
 
   if (isDryRun()) {
     log(
-      `[DRY RUN] 不發佈。將會建立 ${findings.length} 則 inline 留言` +
-        `（需求軸 ${axes.requirement.length}、程式碼軸 ${axes.code.length}）+ 1 則 summary`,
+      `[DRY RUN] Not publishing. Would create ${findings.length} inline comments` +
+        ` (requirement axis ${axes.requirement.length}, code axis ${axes.code.length}) + 1 summary`,
     );
     for (const f of findings) {
       log(`  ${f.severity} ${f.file}:${f.anchor?.startLine} — ${f.claim}`);
@@ -77,7 +77,7 @@ export async function publish(
   result.resolved = await resolveStaleThreads(ref, findStaleThreads(threads, ctx.files));
   result.dismissals = collectDismissals(threads);
   if (result.dismissals.length > 0) {
-    log(`偵測到 ${result.dismissals.length} 則先前被人工標記為不修的留言（已記錄，供日後收斂規則用）`);
+    log(`Found ${result.dismissals.length} comments previously dismissed by a human (recorded for future exclusion rules)`);
   }
 
   for (const f of findings) {
@@ -100,13 +100,13 @@ export async function publish(
       seen.add(f.fingerprint);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      log(`[FAIL] 建立留言失敗 ${f.file}:${f.anchor.startLine}：${msg}`);
+      log(`[FAIL] Could not create comment ${f.file}:${f.anchor.startLine}: ${msg}`);
       result.failed.push({ finding: f, error: msg });
     }
   }
 
   if (result.alreadyPosted.length > 0) {
-    log(`${result.alreadyPosted.length} 筆 findings 先前已留言過，本次略過`);
+    log(`${result.alreadyPosted.length} findings already commented, skipped`);
   }
 
   const existing = findSummaryThread(threads);
@@ -114,16 +114,16 @@ export async function publish(
     if (existing) {
       await updateComment(ref, existing.thread.id, existing.commentId, summaryBody);
       result.summaryThreadId = existing.thread.id;
-      log(`已更新 summary 留言（thread ${existing.thread.id}）`);
+      log(`Updated summary comment (thread ${existing.thread.id})`);
     } else {
       // Closed, not active: the summary is informational and should never trip a
       // "comment resolution required" policy.
       const t = await createThread(ref, { content: summaryBody, status: "closed" });
       result.summaryThreadId = t.id;
-      log(`已建立 summary 留言（thread ${t.id}）`);
+      log(`Created summary comment (thread ${t.id})`);
     }
   } catch (e) {
-    log(`[FAIL] summary 留言失敗：${e instanceof Error ? e.message : String(e)}`);
+    log(`[FAIL] Summary comment failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   if (POST_STATUS) {
@@ -132,20 +132,20 @@ export async function publish(
     const unmet = summaryInput.req ? unmetCriteria(summaryInput.req) : [];
     const risky = axes.code.filter((f) => f.severity === "critical" || f.severity === "high");
     const reasons: string[] = [];
-    if (unmet.length > 0) reasons.push(`${unmet.length} 條驗收條件未滿足`);
-    if (risky.length > 0) reasons.push(`${risky.length} 個高風險程式碼問題`);
+    if (unmet.length > 0) reasons.push(`${unmet.length} unmet acceptance criteria`);
+    if (risky.length > 0) reasons.push(`${risky.length} high-risk code issues`);
     try {
       await postStatus(
         ref,
         reasons.length > 0 ? "failed" : "succeeded",
         reasons.length > 0
-          ? reasons.join("、")
-          : `已審查 ${ctx.files.length} 個檔案，需求與程式碼皆無阻擋項目`,
+          ? reasons.join(", ")
+          : `Reviewed ${ctx.files.length} files, no blockers in requirements or code`,
         { iterationId: ctx.iteration.id },
       );
-      log(`已回報 PR status：${reasons.length > 0 ? `failed（${reasons.join("、")}）` : "succeeded"}`);
+      log(`Reported PR status: ${reasons.length > 0 ? `failed (${reasons.join(", ")})` : "succeeded"}`);
     } catch (e) {
-      log(`[FAIL] PR status 回報失敗：${e instanceof Error ? e.message : String(e)}`);
+      log(`[FAIL] PR status report failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 

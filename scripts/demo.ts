@@ -57,8 +57,8 @@ const files = [
 const ctx = {
   ref: { baseUrl: "https://dev.azure.com/contoso", org: "contoso", project: "Shop", repoId: "shop-api", prId: 4821 },
   pr: {
-    title: "退款流程支援部分退款",
-    description: "實作 PBI #12043 的部分退款。",
+    title: "Support partial refunds in the refund flow",
+    description: "Implements partial refunds for PBI #12043.",
     sourceBranch: "feature/partial-refund",
     targetBranch: "main",
     createdBy: "Alice Wu",
@@ -76,7 +76,7 @@ const req: RequirementResult = {
   workItems: [
     {
       id: 12043,
-      title: "支援部分退款",
+      title: "Support partial refunds",
       type: "Product Backlog Item",
       state: "Active",
       description: "",
@@ -87,35 +87,35 @@ const req: RequirementResult = {
   criteria: [
     {
       workItemId: 12043,
-      criterion: "使用者可以對一筆訂單申請小於訂單總額的退款",
+      criterion: "A user can refund an amount smaller than the order total",
       verdict: "satisfied",
-      note: "process_refund 接受 amount 參數並累加到 order.refunded。",
+      note: "process_refund takes an amount and adds it to order.refunded.",
       file: "/src/payment/refund_service.py",
       quote: "    order.refunded += amount",
     },
     {
       workItemId: 12043,
-      criterion: "累計退款金額不得超過訂單總額",
+      criterion: "Cumulative refunds must not exceed the order total",
       verdict: "missing",
-      note: "diff 中找不到任何檢查 order.refunded 是否超過訂單總額的程式碼。",
+      note: "No code in the diff checks order.refunded against the order total.",
     },
     {
       workItemId: 12043,
-      criterion: "每筆退款都要寫入稽核日誌，包含操作者與時間",
+      criterion: "Every refund writes an audit log entry with actor and timestamp",
       verdict: "misunderstood",
-      note: "只加了 console 輸出，不是稽核日誌，且未記錄操作者。",
+      note: "Only a console log was added. Not an audit log, and no actor recorded.",
       file: "/app/checkout/page.tsx",
       quote: "  console.log('cart', cart)",
     },
     {
       workItemId: 12043,
-      criterion: "退款失敗時應通知使用者",
+      criterion: "Notify the user when a refund fails",
       verdict: "not-verifiable",
-      note: "通知機制可能在前端或訊息佇列，無法只從本次變更判斷。",
+      note: "Notification may live in the frontend or a message queue. Not decidable from this change alone.",
     },
   ],
   extras: [
-    { claim: "在結帳頁新增了購物車的除錯輸出，與退款需求無關。", file: "/app/checkout/page.tsx" },
+    { claim: "Adds cart debug output on the checkout page, unrelated to the refund requirement.", file: "/app/checkout/page.tsx" },
   ],
 };
 
@@ -126,11 +126,12 @@ const findings: AnchoredFinding[] = [
     confidence: 0.9,
     file: "/src/payment/refund_service.py",
     quote: "    gateway.refund(order.payment_id, amount)",
-    claim: "外部金流呼叫在資料庫交易之內，交易會一直持有連線直到 RPC 回應。",
+    claim: "External payment call sits inside the DB transaction, holding a connection until the RPC returns.",
     evidence:
-      "若 gateway.refund 逾時或拋出例外，db.commit() 不會執行，但金流端可能已經退款成功，" +
-      "造成帳款與資料庫不一致；同時整個 RPC 期間都占用一條連線，高併發下會耗盡連線池。",
-    suggested_fix: "先 commit 本地狀態，再以 outbox / 事件方式觸發金流退款並處理補償。",
+      "If gateway.refund times out or throws, db.commit() never runs, but the gateway may have already " +
+      "refunded, leaving books and DB inconsistent. The connection is also held for the whole RPC, " +
+      "exhausting the pool under load.",
+    suggested_fix: "Commit local state first, then trigger the gateway refund via an outbox/event with compensation.",
     sources: ["qwen3-coder"],
     fingerprint: "a1b2c3d4e5f6",
     anchor: { side: "right", startLine: 5, endLine: 5, startOffset: 1, endOffset: 46 },
@@ -141,8 +142,8 @@ const findings: AnchoredFinding[] = [
     confidence: 0.95,
     file: "/app/checkout/page.tsx",
     quote: "  console.log('cart', cart)",
-    claim: "結帳頁留下了除錯輸出，且內容包含完整購物車資料。",
-    evidence: "會出現在正式環境的瀏覽器 console，購物車內容可能含個資。",
+    claim: "Debug output left on the checkout page, dumping the full cart.",
+    evidence: "Shows up in the browser console in production; cart contents may include personal data.",
     sources: ["qwen3-coder", "devstral-small"],
     fingerprint: "f6e5d4c3b2a1",
     anchor: { side: "right", startLine: 3, endLine: 3, startOffset: 1, endOffset: 28 },
@@ -156,7 +157,7 @@ const degraded: AnchoredFinding[] = [
     confidence: 0.6,
     file: "/src/payment/refund_service.py",
     quote: "    order.refunded = order.refunded + amount",
-    claim: "退款金額累加沒有鎖，併發退款會覆蓋彼此的結果。",
+    claim: "Refund total is incremented without a lock; concurrent refunds overwrite each other.",
     sources: ["qwen3-coder"],
     fingerprint: "0f0f0f0f0f0f",
     anchorFailure: "quote-not-found",
@@ -164,7 +165,7 @@ const degraded: AnchoredFinding[] = [
 ];
 
 console.log("═".repeat(78));
-console.log("  Sticky summary 留言（PR 頁面上方，每次執行原地更新）");
+console.log("  Sticky summary comment (top of the PR, updated in place each run)");
 console.log("═".repeat(78));
 console.log(
   renderSummary({
@@ -186,7 +187,7 @@ console.log(
 
 for (const f of findings) {
   console.log(`\n${"═".repeat(78)}`);
-  console.log(`  Inline 留言 → ${f.file}:${f.anchor?.startLine}`);
+  console.log(`  Inline comment → ${f.file}:${f.anchor?.startLine}`);
   console.log("═".repeat(78));
   console.log(renderFindingComment(f));
 }

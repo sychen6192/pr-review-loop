@@ -77,14 +77,14 @@ async function runOne(
   });
 
   if (res.error) {
-    log(`[FAIL] finder ${model} 呼叫失敗：${res.error}`);
+    log(`[FAIL] finder ${model} call failed: ${res.error}`);
     return { model, findings: [], error: res.error, rejected: 0, raw: "" };
   }
 
   const parsed = parseJsonObject<{ findings?: unknown }>(res.text);
   if (!parsed.ok) {
     // Fail closed: an unparseable response yields no findings rather than guessed ones.
-    log(`[FAIL] finder ${model} 輸出無法解析：${parsed.error}`);
+    log(`[FAIL] finder ${model} output unparseable: ${parsed.error}`);
     return { model, findings: [], error: parsed.error, rejected: 0, raw: res.text };
   }
 
@@ -97,8 +97,8 @@ async function runOne(
     else rejected++;
   }
   log(
-    `finder ${model}：${findings.length} 筆 findings` +
-      (rejected > 0 ? `（另有 ${rejected} 筆欄位不完整被丟棄）` : ""),
+    `finder ${model}: ${findings.length} findings` +
+      (rejected > 0 ? ` (${rejected} dropped for incomplete fields)` : ""),
   );
   return { model, findings, rejected, raw: res.text };
 }
@@ -114,7 +114,7 @@ export async function runFinders(
     rules: renderRules(selected),
   });
   if (omitted.length > 0) {
-    log(`[WARN] diff 超出預算，${omitted.length} 個檔案未納入 finder context`);
+    log(`[WARN] diff over budget; ${omitted.length} files left out of the finder context`);
   }
   // Parallel across models; each is an independent opinion (M3 relies on that independence).
   const outputs = await Promise.all(models.map((m) => runOne(runner, m, prompt)));

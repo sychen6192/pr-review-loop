@@ -14,7 +14,7 @@ import type { ReviewContext } from "../ado/intake";
 
 async function git(repo: string, args: string[]): Promise<string> {
   const res = await run("git", ["-C", repo, ...args], 120_000);
-  if (res.code !== 0) throw new Error(`git ${args.join(" ")} 失敗：${res.stderr.trim()}`);
+  if (res.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr.trim()}`);
   return res.stdout;
 }
 
@@ -103,7 +103,7 @@ export async function buildLocalReviewContext(opts: LocalIntakeOptions): Promise
       truncated: false,
       language: detectLanguage(e.path),
     });
-    logVerbose(`  ${adoPath}：${hunks.length} hunks，${changedRightLines.size} 行變更`);
+    logVerbose(`  ${adoPath}: ${hunks.length} hunks, ${changedRightLines.size} changed lines`);
   }
 
   const subject = (await git(opts.repo, ["log", "-1", "--format=%s", opts.head])).trim();
@@ -117,7 +117,7 @@ export async function buildLocalReviewContext(opts: LocalIntakeOptions): Promise
     status: "local",
   };
 
-  log(`本地 diff：${opts.base}...${opts.head}，納入 review ${files.length} 個檔案，略過 ${skipped.length} 個`);
+  log(`Local diff: ${opts.base}...${opts.head}, ${files.length} files under review, ${skipped.length} skipped`);
 
   const iteration = { id: 1, sourceRefCommit: "", targetRefCommit: "", commonRefCommit: "", createdDate: "" };
   return {

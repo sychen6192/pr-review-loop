@@ -2,49 +2,62 @@
 applyTo: "**/*"
 ---
 
-# 結構性 code smell baseline
+# Structural code smell baseline
 
-以下取自《Refactoring》第 3 章。適用於所有語言，在 repo 沒有自訂規範時作為基準。
+Taken from *Refactoring*, chapter 3. Applies to all languages, as the baseline when a repo
+has no conventions of its own.
 
-**兩條約束，缺一不可：**
+**Two constraints, both mandatory:**
 
-1. **repo 自己的規範永遠覆蓋這份 baseline。** 專案文件（CONTRIBUTING、CODING_STANDARDS、
-   CLAUDE.md 等）若認可某種寫法，即使這裡列為 smell，也不要回報。
-2. **每個 smell 都是判斷題，不是硬性違規。** 回報時措辭要保留餘地
-   （「這裡可能有 Feature Envy」），severity 一律不超過 medium，category 用 maintainability。
-   code smell 本質是啟發式，當成規則執行只會製造噪音。
+1. **The repo's own conventions always override this baseline.** If project docs
+   (CONTRIBUTING, CODING_STANDARDS, CLAUDE.md, etc.) endorse a construct, do not report it,
+   even if it is listed as a smell here.
+2. **Every smell is a judgment call, not a hard violation.** Word reports with room for
+   doubt ("there may be Feature Envy here"), never exceed medium severity, and use the
+   maintainability category. Code smells are heuristics by nature; enforcing them as rules
+   only produces noise.
 
-另外：linter 已經涵蓋的（格式、命名慣例、未使用變數）一律不要從這裡回報。
+Also: anything the linter already covers (formatting, naming conventions, unused variables)
+must never be reported from here.
 
-## 12 個 smell（是什麼 → 怎麼修）
+## The 12 smells (what it is → how to fix it)
 
-- **Mysterious Name** — 函式、變數或型別的名稱沒有透露它做什麼或存什麼。
-  → 改名；如果想不出誠實的名字，代表設計本身模糊。
-- **Duplicated Code** — 同樣形狀的邏輯在這次變更的多個 hunk 或檔案中出現。
-  → 抽出共用部分，兩邊都呼叫它。
-- **Feature Envy** — 某個方法存取別的物件的資料，比存取自己的還多。
-  → 把方法搬到它所羨慕的資料那一邊。
-- **Data Clumps** — 同樣幾個欄位或參數老是一起出現（一個想被生出來的型別）。
-  → 把它們包成一個型別，傳那個型別。
-- **Primitive Obsession** — 用原生型別或字串代表一個值得擁有自己型別的領域概念。
-  → 給那個概念一個小型別。
-- **Repeated Switches** — 對同一個型別的 switch 或 if 串接，在變更中重複出現。
-  → 改用多型，或讓兩處共用同一張對照表。
-- **Shotgun Surgery** — 一個邏輯上的改動，逼你在 diff 中散落地改很多檔案。
-  → 把會一起改的東西收攏到同一個模組。
-- **Divergent Change** — 同一個檔案或模組因為好幾個不相干的理由被修改。
-  → 拆開，讓每個模組只因一個理由而改變。
-- **Speculative Generality** — 為了規格中沒有的需求而加的抽象、參數或掛鉤。
-  → 刪掉；inline 回去，等真正的需求出現再說。
-- **Message Chains** — 長串的 `a.b().c().d()` 導覽，讓呼叫端依賴了它不該知道的結構。
-  → 把這段走訪藏到第一個物件的一個方法後面。
-- **Middle Man** — 某個類別或函式大部分工作只是轉發給別人。
-  → 拿掉它，直接呼叫真正的目標。
-- **Refused Bequest** — 子類別或實作者忽略、或覆寫掉它繼承來的大部分東西。
-  → 放棄繼承，改用組合。
+- **Mysterious Name** — a function, variable, or type name does not reveal what it does or
+  what it holds.
+  → Rename it; if you cannot think of an honest name, the design itself is muddled.
+- **Duplicated Code** — logic of the same shape appears in several hunks or files in this
+  change.
+  → Extract the shared part and call it from both sides.
+- **Feature Envy** — a method accesses another object's data more than its own.
+  → Move the method to the data it envies.
+- **Data Clumps** — the same few fields or parameters keep appearing together (a type trying
+  to be born).
+  → Wrap them in a type and pass that type.
+- **Primitive Obsession** — a primitive or string represents a domain concept that deserves
+  its own type.
+  → Give the concept a small type.
+- **Repeated Switches** — a switch or if-chain over the same type recurs across the change.
+  → Use polymorphism, or have both sites share one lookup table.
+- **Shotgun Surgery** — one logical change forces you to edit many scattered files in the
+  diff.
+  → Pull the things that change together into one module.
+- **Divergent Change** — one file or module is modified for several unrelated reasons.
+  → Split it, so each module changes for one reason only.
+- **Speculative Generality** — abstraction, parameters, or hooks added for requirements that
+  are not in the spec.
+  → Delete it; inline it back and wait for the real requirement.
+- **Message Chains** — long `a.b().c().d()` navigation makes the caller depend on structure
+  it should not know about.
+  → Hide the traversal behind a method on the first object.
+- **Middle Man** — a class or function whose work is mostly forwarding to someone else.
+  → Remove it and call the real target directly.
+- **Refused Bequest** — a subclass or implementer ignores or overrides most of what it
+  inherits.
+  → Drop the inheritance; use composition.
 
-## 不要從這份 baseline 回報的東西
+## Do not report these from this baseline
 
-- 既有程式碼的檔案長度。只看**這次變更貢獻了什麼**——新增的檔案一出生就過大、
-  或讓既有檔案顯著膨脹，才值得提。
-- 「可以加更多測試」「可以寫更多註解」這類沒有具體缺口的建議。
+- File length of pre-existing code. Look only at **what this change contributes** — a new
+  file born oversized, or one that makes an existing file grow significantly, is worth
+  raising.
+- Suggestions with no concrete gap, like "could add more tests" or "could use more comments".

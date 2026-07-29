@@ -12,17 +12,17 @@ import { createRunner } from "./models/runner";
 import { runReview } from "./orchestrator";
 
 function usage(): never {
-  console.error(`用法：prloop <PR URL> [選項]
+  console.error(`Usage: prloop <PR URL> [options]
 
   <PR URL>              https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}
 
-選項：
-  --since <iteration>   只審查該 iteration 之後的變更（增量 review）
-  --since auto          自動接續上次審查的 iteration
-  --dry-run             計算但不發佈留言
-  -h, --help            顯示此說明
+Options:
+  --since <iteration>   review only changes after that iteration (incremental)
+  --since auto          resume from the last reviewed iteration
+  --dry-run             compute everything, post nothing
+  -h, --help            show this help
 
-環境變數見 .env.example。`);
+Env vars: see .env.example`);
   process.exit(1);
 }
 
@@ -41,48 +41,48 @@ async function main() {
     if (raw === "auto") sinceAuto = true;
     else {
       const n = Number(raw);
-      if (!Number.isInteger(n) || n < 0) die(`--since 需要非負整數或 auto，收到：${raw}`);
+      if (!Number.isInteger(n) || n < 0) die(`--since takes a non-negative integer or "auto", got: ${raw}`);
       compareTo = n;
     }
   }
   if (args.includes("--dry-run")) process.env["PRR_DRY_RUN"] = "1";
 
   const ref = parsePrUrl(url);
-  banner(`prloop：${ref.org}/${ref.project}/${ref.repoId} PR !${ref.prId}`);
-  log(`模型：${FINDER_MODELS.join("、")} @ ${LLM_BASE_URL}`);
-  if (isDryRun()) log("DRY RUN：不會發佈任何留言");
+  banner(`prloop: ${ref.org}/${ref.project}/${ref.repoId} PR !${ref.prId}`);
+  log(`Models: ${FINDER_MODELS.join(", ")} @ ${LLM_BASE_URL}`);
+  if (isDryRun()) log("DRY RUN: no comments will be posted");
   if (sinceAuto) {
     const last = await resolveLastReviewedIteration(ref);
-    if (last === undefined) log("--since auto：找不到先前的審查紀錄，改為完整審查");
+    if (last === undefined) log("--since auto: no prior review found, doing a full review");
     else {
       compareTo = last;
-      log(`--since auto：接續 iteration ${last}`);
+      log(`--since auto: resuming from iteration ${last}`);
     }
   }
-  if (compareTo > 0) log(`增量模式：只審查 iteration ${compareTo} 之後的變更`);
+  if (compareTo > 0) log(`Incremental mode: reviewing only changes after iteration ${compareTo}`);
 
   const result = await runReview({ ref, runner: await createRunner(), compareTo });
 
-  banner("完成");
-  log(`耗時 ${result.durationSec}s，artifacts：${result.runDir}`);
+  banner("Done");
+  log(`Elapsed ${result.durationSec}s, artifacts: ${result.runDir}`);
 
   const unmet = result.req ? unmetCriteria(result.req) : [];
-  if (result.req?.skipped) log(`需求軸：${result.req.skipped}`);
-  else if (result.req?.error) log(`需求軸：未能完成（${result.req.error}）`);
+  if (result.req?.skipped) log(`Requirement axis: ${result.req.skipped}`);
+  else if (result.req?.error) log(`Requirement axis: failed (${result.req.error})`);
   else if (result.req) {
     log(
-      `需求軸：${result.req.criteria.length} 條驗收條件，${unmet.length} 條未滿足` +
-        (result.req.extras.length ? `，${result.req.extras.length} 項範圍外變更` : ""),
+      `Requirement axis: ${result.req.criteria.length} acceptance criteria, ${unmet.length} unmet` +
+        (result.req.extras.length ? `, ${result.req.extras.length} out-of-scope changes` : ""),
     );
   }
 
   const { inline, degraded, belowBar } = result.agg;
-  log(`程式碼軸：inline 留言 ${inline.length}｜未達門檻 ${belowBar.length}｜無法定位 ${degraded.length}`);
+  log(`Code axis: inline comments ${inline.length} | below threshold ${belowBar.length} | unanchored ${degraded.length}`);
   if (result.publishResult) {
     log(
-      `實際發佈 ${result.publishResult.posted.length}｜先前已發過 ${result.publishResult.alreadyPosted.length}` +
-        (result.publishResult.failed.length ? `｜失敗 ${result.publishResult.failed.length}` : "") +
-        (result.publishResult.resolved ? `｜自動關閉 ${result.publishResult.resolved}` : ""),
+      `Posted ${result.publishResult.posted.length} | already posted ${result.publishResult.alreadyPosted.length}` +
+        (result.publishResult.failed.length ? ` | failed ${result.publishResult.failed.length}` : "") +
+        (result.publishResult.resolved ? ` | auto-resolved ${result.publishResult.resolved}` : ""),
     );
   }
 

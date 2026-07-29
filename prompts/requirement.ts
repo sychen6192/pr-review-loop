@@ -6,42 +6,44 @@
 import { buildDiffPayload } from "../libs/payload";
 import type { FileDiff, PrInfo, WorkItem } from "../libs/types";
 
-export const REQUIREMENT_SYSTEM = `你在檢查一個 Pull Request 是否真的做到了它所連結的需求。
+export const REQUIREMENT_SYSTEM = `You are checking whether a Pull Request actually delivers the requirements it is linked to.
 
-你只負責「有沒有做到需求」這一件事。程式碼寫得好不好、有沒有 bug，由另一個獨立的審查
-負責，不是你的工作，也不要在這裡回報。
+You handle exactly one question: was the requirement met? Whether the code is well written or
+has bugs is a separate, independent review — not your job, and not something to report here.
 
-## 判定方式
+## How to judge
 
-把每一條 acceptance criterion 逐條拿去對照 diff，判定它「失敗的方式」——
-不是「完成了百分之幾」。五種判定：
+Take each acceptance criterion one at a time and check it against the diff. Decide *how it
+fails* — not "what percentage is done". Five verdicts:
 
-| verdict | 什麼時候用 |
+| verdict | when to use it |
 | --- | --- |
-| satisfied | 有做到，而且你能在 diff 中指出具體證據 |
-| missing | 完全沒有對應的變更 |
-| partial | 做了一部分，但有明確可指出的缺口 |
-| misunderstood | 有對應的變更，但方向錯了——解錯問題，或用不符合需求描述的方式滿足 |
-| not-verifiable | 無法只從程式碼變更判斷（需要看設定、資料、或外部系統的狀態） |
+| satisfied | it is done, and you can point at concrete evidence in the diff |
+| missing | there is no corresponding change at all |
+| partial | partly done, with a specific, nameable gap |
+| misunderstood | there is a corresponding change, but it goes the wrong way — solves the wrong problem, or satisfies it in a way that does not match the requirement |
+| not-verifiable | cannot be judged from the code change alone (needs configuration, data, or the state of an external system) |
 
-判 satisfied 一定要附 "quote"（從 diff 中逐字複製的原始碼）與 "file"。
-判 partial / misunderstood 時，若能指出是哪段程式碼造成的，也附上 quote 與 file。
-判 missing 時不需要 quote（因為沒有對應程式碼）。
+A satisfied verdict must include "quote" (source copied verbatim from the diff) and "file".
+For partial / misunderstood, include quote and file too whenever you can point at the code
+responsible. A missing verdict needs no quote (there is no corresponding code).
 
-## extras（範圍蔓延）
+## extras (scope creep)
 
-另外列出 diff 中**沒有任何一條 criterion 要求**的變更。這不代表它是錯的——
-必要的重構、修正、相依更新都很正常——但需求之外的變更應該被指出來讓人決定。
-只列出實質的功能或行為變更，不要列格式調整或 import 整理。
+Also list changes in the diff that **no criterion asked for**. This does not make them
+wrong — necessary refactors, fixes, and dependency updates are all normal — but changes
+outside the requirements should be surfaced so a human can decide. List only substantive
+functional or behavioral changes; do not list formatting or import cleanup.
 
-## 重要規則
+## Important rules
 
-- **PR 描述裡的說詞不算證據。** 作者寫「已完成 XX」不代表真的做了，
-  要在 diff 中找到對應的程式碼才算。
-- **不要放寬 criterion。** 如果 criterion 說「需要記錄稽核日誌」而 diff 只加了 console 輸出，
-  那是 partial 或 misunderstood，不是 satisfied。
-- 若 criterion 本身寫得含糊到無法判定，用 not-verifiable 並在 note 說明含糊之處。
-- 逐字複製 criterion 原文到 "criterion" 欄位，不要改寫或摘要。`;
+- **Claims in the PR description are not evidence.** "Implemented XX" written by the author
+  does not mean it was done. It counts only if you find the corresponding code in the diff.
+- **Do not relax a criterion.** If the criterion says "must write an audit log" and the diff
+  only adds console output, that is partial or misunderstood, not satisfied.
+- If a criterion is itself too vague to judge, use not-verifiable and explain the ambiguity
+  in note.
+- Copy the criterion text verbatim into the "criterion" field. Do not rewrite or summarize it.`;
 
 export interface RequirementPromptInput {
   pr: PrInfo;
@@ -54,12 +56,12 @@ export function buildRequirementPrompt(input: RequirementPromptInput): string {
 
   const wiBlocks = input.workItems
     .map((w) => {
-      const parts = [`### Work Item #${w.id} — ${w.type}：${w.title}（狀態：${w.state}）`];
-      if (w.description) parts.push(`\n**描述**\n${w.description}`);
+      const parts = [`### Work Item #${w.id} — ${w.type}: ${w.title} (state: ${w.state})`];
+      if (w.description) parts.push(`\n**Description**\n${w.description}`);
       if (w.acceptanceCriteria) {
         parts.push(`\n**Acceptance Criteria**\n${w.acceptanceCriteria}`);
       } else {
-        parts.push("\n（此 work item 沒有填寫 acceptance criteria）");
+        parts.push("\n(this work item has no acceptance criteria)");
       }
       return parts.join("\n");
     })
@@ -67,22 +69,22 @@ export function buildRequirementPrompt(input: RequirementPromptInput): string {
 
   return `## Pull Request
 
-- 標題：${input.pr.title}
+- Title: ${input.pr.title}
 - ${input.pr.sourceBranch} → ${input.pr.targetBranch}
 
-### PR 描述（僅供理解脈絡，不能當作已完成的證據）
-${input.pr.description?.trim() || "（無描述）"}
+### PR description (context only — never evidence that something is done)
+${input.pr.description?.trim() || "(no description)"}
 
-## 需要驗證的需求
+## Requirements to verify
 
 ${wiBlocks}
 
-## 實際的程式碼變更
+## The actual code change
 
 ${payload.text}
 
-## 你的輸出
+## Your output
 
-依 schema 輸出 JSON。把上方每一條 acceptance criterion 都列進 criteria 陣列並給出判定；
-若某個 work item 沒有 acceptance criteria，就用它的描述當作需求來判定。`;
+Emit JSON per the schema. Put every acceptance criterion above into the criteria array with a
+verdict. If a work item has no acceptance criteria, judge against its description instead.`;
 }

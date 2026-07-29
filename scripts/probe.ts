@@ -110,7 +110,22 @@ async function rawGet(url: string, header: string): Promise<void> {
  * server actually presented, which names the interceptor — that is the piece of information
  * that turns "handshake failed" into "install this CA".
  */
-async function probeTls(host: string, port: number): Promise<void> {
+interface TlsResult {
+  ok: boolean;
+  err?: string;
+  code?: string;
+  chain: string[];
+  issuer: string;
+  der: Buffer[];
+}
+
+/** DER → PEM. Node hands back raw certificate bytes; NODE_EXTRA_CA_CERTS wants PEM text. */
+function derToPem(der: Buffer): string {
+  const b64 = der.toString("base64").match(/.{1,64}/g)?.join("\n") ?? "";
+  return `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
+}
+
+async function probeTls(host: string, port: number, exportCaTo?: string): Promise<void> {
   console.log("\n=== 4. TLS 握手 ===");
 
   const proxy = bypassesProxy(host) ? "" : HTTPS_PROXY || HTTP_PROXY;
@@ -164,14 +179,15 @@ async function probeTls(host: string, port: number): Promise<void> {
   const connect = async (rejectUnauthorized: boolean) => {
     const opened = await openSocket();
     if (!opened.sock) {
-      return { ok: false, err: opened.err, code: opened.code, chain: [] as string[], issuer: "" };
+      return { ok: false, err: opened.err, code: opened.code, chain: [], issuer: "", der: [] };
     }
-    return new Promise<{ ok: boolean; err?: string; code?: string; chain: string[]; issuer: string }>((resolve) => {
+    return new Promise<TlsResult>((resolve) => {
       const socket = tls.connect(
         { socket: opened.sock, servername: host, rejectUnauthorized, timeout: 15_000 },
         () => {
           const cert = socket.getPeerCertificate(true) as tls.DetailedPeerCertificate | undefined;
           const chain: string[] = [];
+          const der: Buffer[] = [];
           let node = cert;
           const seen = new Set<string>();
           while (node && node.subject) {
@@ -183,6 +199,7 @@ async function probeTls(host: string, port: number): Promise<void> {
             if (seen.has(key)) break;
             seen.add(key);
             chain.push(`${cn}   ← 簽發者：${iss}`);
+            if (node.raw) der.push(node.raw);
             node = node.issuerCertificate === node ? undefined : node.issuerCertificate;
           }
           // Subject/issuer fields can come back as arrays when a DN repeats an attribute.
@@ -190,15 +207,15 @@ async function probeTls(host: string, port: number): Promise<void> {
             Array.isArray(v) ? v.join(", ") : (v ?? "");
           const issuer = flat(cert?.issuer?.CN) || flat(cert?.issuer?.O);
           socket.end();
-          resolve({ ok: true, chain, issuer });
+          resolve({ ok: true, chain, issuer, der });
         },
       );
       socket.on("error", (e: NodeJS.ErrnoException) => {
-        resolve({ ok: false, err: e.message, code: e.code, chain: [], issuer: "" });
+        resolve({ ok: false, err: e.message, code: e.code, chain: [], issuer: "", der: [] });
       });
       socket.on("timeout", () => {
         socket.destroy();
-        resolve({ ok: false, err: "TLS 握手逾時（15s）", chain: [], issuer: "" });
+        resolve({ ok: false, err: "TLS 握手逾時（15s）", chain: [], issuer: "", der: [] });
       });
     });
   };
@@ -233,8 +250,26 @@ async function probeTls(host: string, port: number): Promise<void> {
   console.log("  伺服器實際出示的憑證鏈：");
   for (const c of loose.chain) console.log(`     ${c}`);
 
-  const rootIssuer = loose.chain.length ? loose.chain[loose.chain.length - 1] : "";
   console.log("");
+
+  // The certificates the server presented are exactly what needs trusting; writing them out
+  // here removes the usual "go ask IT for the CA file" round trip.
+  if (loose.der.length > 0) {
+    const target = exportCaTo ?? path.join(PRLOOP_ROOT, "corporate-ca.pem");
+    // Skip the leaf: it is the site certificate, not an authority.
+    const authorities = loose.der.slice(1);
+    const pem = (authorities.length > 0 ? authorities : loose.der).map(derToPem).join("");
+    fs.writeFileSync(target, pem);
+    console.log(`  已將憑證鏈寫出到：${target}（${authorities.length || loose.der.length} 張）`);
+    console.log("");
+    console.log("  接著這樣做：");
+    console.log(`     export NODE_EXTRA_CA_CERTS=${target}`);
+    console.log(`     npx tsx scripts/probe.ts '<PR URL>'`);
+    console.log("");
+    console.log("  ⚠️ 這份是從連線當下取得的，若中間人不是你信任的對象就不該採用。");
+    console.log("     正式使用建議改用 IT 提供的公司根 CA 檔案。");
+    console.log("");
+  }
   if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(strict.code ?? strict.err ?? "")) {
     console.log("  → 憑證由 Node 不信任的 CA 簽發。上面鏈結最末端那個簽發者就是攔截你的 CA。");
     console.log("     若那不是公開 CA（Microsoft / DigiCert 之類），代表公司有 TLS 攔截設備。");
@@ -242,7 +277,14 @@ async function probeTls(host: string, port: number): Promise<void> {
     console.log("  解法：把該 CA 的憑證檔指給 Node（Node 不讀作業系統的信任存放區）");
     console.log("     export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem");
     console.log("");
-    console.log("  取得憑證檔的方式（擇一）：");
+    console.log("  其他做法：");
+    console.log("     • Node 22.15+ / 23.5+ 可用系統信任存放區：node --use-system-ca ...");
+    console.log("       ⚠️ 這個旗標「不能」放進 NODE_OPTIONS，所以搭配 npx/tsx 不好用");
+    for (const candidate of ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"]) {
+      if (fs.existsSync(candidate)) {
+        console.log(`     • 系統憑證包存在，可先試：export NODE_EXTRA_CA_CERTS=${candidate}`);
+      }
+    }
     console.log("     • 向 IT 索取公司根 CA 的 .pem / .crt");
     console.log(
       `     • 自行匯出：openssl s_client -showcerts -servername ${host} -connect ${host}:${port} </dev/null \\`,
@@ -254,7 +296,6 @@ async function probeTls(host: string, port: number): Promise<void> {
     console.log("     若這樣就通了，就百分之百確定是憑證問題。但它會關閉所有憑證驗證，");
     console.log("     等於接受任何中間人，確認完請立刻改用 NODE_EXTRA_CA_CERTS。");
   }
-  void rootIssuer;
 }
 
 async function main() {
@@ -313,7 +354,9 @@ async function main() {
     process.exit(1);
   }
 
-  await probeTls(new URL(ref.baseUrl).hostname, Number(new URL(ref.baseUrl).port || 443));
+  const exportIdx = process.argv.indexOf("--export-ca");
+  const exportCaTo = exportIdx > 0 ? process.argv[exportIdx + 1] : undefined;
+  await probeTls(new URL(ref.baseUrl).hostname, Number(new URL(ref.baseUrl).port || 443), exportCaTo);
 
   console.log("\n=== 5. 用目前設定實際請求一次 ===");
   await rawGet(`${prBase(ref)}?api-version=${ADO_API_VERSION}`, header);

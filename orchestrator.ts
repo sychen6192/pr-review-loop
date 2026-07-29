@@ -1,7 +1,7 @@
 // The single deterministic control flow. Models are called at exactly one point (the finder
 // stage); every other decision — what to review, where a finding lives, what gets posted —
 // is made by code here (design principle: the loop never hands control to a model).
-import { SKIP_REQUIREMENT, SKIP_STATIC } from "./config";
+import { LEARN_FROM_DISMISSALS, SKIP_REQUIREMENT, SKIP_STATIC, excludedCategories } from "./config";
 import { buildReviewContext, type ReviewContext } from "./ado/intake";
 import { anchorAndDedupe, finalize, mergeToolFindings, type AggregateResult } from "./gates/aggregate";
 import { runFinders } from "./gates/finder";
@@ -9,6 +9,7 @@ import { runRequirementGate, toRequirementFindings } from "./gates/requirement";
 import { applyVerdicts, runSkeptic } from "./gates/skeptic";
 import { runStaticGate, triageAndConvert, type StaticResult } from "./gates/static";
 import { createRunDir } from "./libs/artifacts";
+import { dismissedCategoryHints, loadDismissals } from "./libs/learnings";
 import { banner, log } from "./libs/log";
 import type { AnchoredFinding, ModelRunner, PrRef, RequirementResult } from "./libs/types";
 import { publish, type PublishResult } from "./publish/publish";
@@ -64,7 +65,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       inline: [],
       belowBar: [],
       degraded: [],
-      stats: { raw: 0, afterDedupe: 0, anchored: 0, survived: 0, inline: 0, byFailure: {} },
+      stats: { raw: 0, afterDedupe: 0, anchored: 0, survived: 0, inline: 0, byFailure: {}, excluded: 0, dismissed: 0 },
     };
     return {
       ctx,
@@ -134,9 +135,17 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   banner("Step 3/4: anchor, adversarial verification and verdicts");
   const candidates = anchorAndDedupe(outputs, ctx.files);
 
+  // Learnings: findings a human already dismissed (on this PR or a previous one) skip the
+  // skeptic — no verification budget is spent re-litigating a closed decision — and are
+  // suppressed by finalize below. Loaded once; also feeds the config hints in the summary.
+  const storedDismissals = LEARN_FROM_DISMISSALS ? loadDismissals(opts.ref) : [];
+  const dismissedFps = new Set(storedDismissals.map((d) => d.fingerprint));
+  const freshCandidates = candidates.merged.filter((f) => !dismissedFps.has(f.fingerprint));
+  const knownDismissed = candidates.merged.filter((f) => dismissedFps.has(f.fingerprint));
+
   // Adversarial verification. The finder ran in coverage mode and is expected to
   // over-report; this is the stage that does the killing.
-  const outcomes = await runSkeptic(opts.runner, candidates.merged, ctx.files);
+  const outcomes = await runSkeptic(opts.runner, freshCandidates, ctx.files);
   const survivors = applyVerdicts(outcomes);
   run.saveJson(
     "skeptic.json",
@@ -154,7 +163,13 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   const toolOut = await triageAndConvert(opts.runner, staticResult, ctx.files);
   run.saveJson("static-findings.json", toolOut);
 
-  const agg = finalize(candidates, mergeToolFindings(survivors, toolOut.findings));
+  // knownDismissed re-enters here so finalize can route it into the summary with its
+  // suppression reason — a suppressed finding must stay visible, never vanish.
+  const agg = finalize(
+    candidates,
+    mergeToolFindings([...survivors, ...knownDismissed], toolOut.findings),
+    dismissedFps,
+  );
 
   // Collect the requirement axis now — everything that could run without it has run.
   const reqOut = await reqPromise;
@@ -193,6 +208,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       omittedFiles: omitted,
       appliedRules: rules,
       staticResult,
+      dismissalHints: dismissedCategoryHints(storedDismissals, excludedCategories()),
       durationSec,
       runDir: run.dir,
     },

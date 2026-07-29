@@ -167,6 +167,12 @@ npx tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json>
 - **No duplicates on re-run** — each comment embeds a finding fingerprint.
 - **Stale threads auto-close** when their target code is gone. The criteria are narrow on
   purpose: wrongly closing a live issue is worse than leaving a stale comment.
+- **Dismissals are remembered.** A finding a reviewer closes as *wontFix*/*byDesign* is
+  recorded per repo (`runs/<org>/<project>/<repo>/dismissals.jsonl`) and never re-posted —
+  on this PR or any later one that carries the same code. Lines a human dismissed also stop
+  attracting rephrased versions of the same comment. Once a category collects
+  `PRR_DISMISSAL_HINT_THRESHOLD` (default 3) dismissals, the summary suggests
+  `PRR_EXCLUDE_CATEGORIES=<category>` — a suggestion only, never applied automatically.
 - **Clean PR → one quiet line.** Style and formatting never get a comment; that's the linter's job.
 
 Every run writes `runs/<org>/<project>/<repo>/pr-<id>/iter-<N>-<ts>/`: the exact prompts
@@ -188,6 +194,8 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_LLM_MAX_TOKENS` | `8192` | **raise to 16384+ for thinking models** — reasoning is billed to this budget |
 | `PRR_MIN_INLINE_SEVERITY` | `medium` | below this → summary only |
 | `PRR_MAX_INLINE_COMMENTS` | `10` | code axis (requirement axis has its own budget of 3) |
+| `PRR_EXCLUDE_CATEGORIES` | — | categories never reported (e.g. `performance,maintainability`); dropped before the skeptic spends tokens on them |
+| `PRR_LEARN_FROM_DISMISSALS` | `1` | `0` = re-post findings humans dismissed as wontFix/byDesign |
 | `PRR_REQUIRE_CORROBORATION` | `1` | `0` publishes unverified single-source findings |
 | `PRR_WORKDIR` | — | checkout path; unset = static analysis skips |
 | `PRR_TRIAGE_MODEL` | — | unset = high-FP tool findings are dropped |
@@ -252,8 +260,9 @@ looks real.
 
 ## Status
 
-M1–M5 complete: REST + quote anchoring → requirement axis → multi-model adversarial
-verification → rules + static analysis → incremental review and comment lifecycle.
+M1–M6 complete: REST + quote anchoring → requirement axis → multi-model adversarial
+verification → rules + static analysis → incremental review and comment lifecycle →
+dismissal learnings and category exclusions.
 Runs end-to-end on real PRs.
 
 MIT.

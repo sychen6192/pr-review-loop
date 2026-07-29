@@ -406,6 +406,12 @@ pr-review-loop/
   diff filter, LLM triage.
 - ✅ **M5 (increments and lifecycle)**: iterations $compareTo incremental review, fingerprint dedup across
   pushes, auto-resolving threads (close when the flagged code is fixed), dismissal logging.
+- ✅ **M6 (learnings + exclusions)**: the "acted on later" half of §10's dismissal logging — a per-repo
+  dismissal store suppresses re-posting what a human closed as wontFix/byDesign (by fingerprint, plus
+  position dedupe against dismissed threads), and `PRR_EXCLUDE_CATEGORIES` drops unwanted categories
+  before verification spends tokens on them (claude-code-security-review's exclusion-list pattern).
+  Accumulated dismissals in one category produce a config *suggestion* in the summary, never an
+  automatic rule.
 
 Every milestone runs end-to-end (posts correctly anchored comments on a real PR). Not horizontal layering.
 

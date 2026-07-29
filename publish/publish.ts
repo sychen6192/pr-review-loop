@@ -1,10 +1,11 @@
 // Publishing: one sticky summary edited in place, plus inline threads for findings that
 // anchored. Re-runs recognise their own threads by fingerprint and never post the same
 // issue twice (the "re-review amnesia" failure mode).
-import { POST_STATUS, isDryRun, BOT_MARKER } from "../config";
+import { LEARN_FROM_DISMISSALS, POST_STATUS, isDryRun, BOT_MARKER } from "../config";
 import { createThread, listThreads, updateComment, type Thread } from "../ado/threads";
 import { postStatus } from "../ado/statuses";
 import { unmetCriteria } from "../gates/requirement";
+import { recordDismissals } from "../libs/learnings";
 import { log } from "../libs/log";
 import { collectDismissals, findStaleThreads, iterationMarker, resolveStaleThreads } from "./lifecycle";
 import type { AnchoredFinding, PrRef } from "../libs/types";
@@ -31,18 +32,22 @@ function findSummaryThread(threads: Thread[]): { thread: Thread; commentId: numb
 }
 
 /**
- * Positions of our own still-active inline threads, for cross-run dedupe by location.
+ * Positions of our own inline threads, for cross-run dedupe by location.
  *
  * The fingerprint is a hash of the model's free-text quote, and models do not reproduce
  * quotes byte-for-byte across runs — one extra quoted line or a different category label
- * makes a "new" fingerprint for the same issue on the same code. An active prloop thread
- * already sitting on those lines is the stronger signal: whatever we would say there, we
- * have already said.
+ * makes a "new" fingerprint for the same issue on the same code. A prloop thread already
+ * sitting on those lines is the stronger signal: whatever we would say there, we have
+ * already said.
+ *
+ * Human-dismissed threads (wontFix/byDesign/closed) count too: a rephrased finding on
+ * lines a reviewer already said no to is the same conversation reopened. Only "fixed" is
+ * left out — the code there changed, and a fresh finding on the new code may be real.
  */
-function postedPositions(threads: Thread[]): Array<{ file: string; start: number; end: number }> {
+export function postedPositions(threads: Thread[]): Array<{ file: string; start: number; end: number }> {
   const out: Array<{ file: string; start: number; end: number }> = [];
   for (const t of threads) {
-    if (t.status !== "active" && t.status !== "pending") continue;
+    if (t.status === "fixed") continue;
     const ctx = t.threadContext;
     if (!ctx?.filePath || !ctx.rightFileStart?.line) continue;
     const ours = t.comments?.some((c) => !c.isDeleted && (c.content ?? "").includes(BOT_MARKER));
@@ -102,8 +107,14 @@ export async function publish(
   // a PR accumulates stale comments the author already addressed.
   result.resolved = await resolveStaleThreads(ref, findStaleThreads(threads, ctx.files));
   result.dismissals = collectDismissals(threads);
-  if (result.dismissals.length > 0) {
-    log(`Found ${result.dismissals.length} comments previously dismissed by a human (recorded for future exclusion rules)`);
+  if (result.dismissals.length > 0 && LEARN_FROM_DISMISSALS) {
+    // Persist into the per-repo learnings store: the next run (on this PR or any other)
+    // suppresses findings matching these fingerprints instead of re-litigating them.
+    const newly = recordDismissals(ref, result.dismissals);
+    log(
+      `Found ${result.dismissals.length} comments dismissed by a human` +
+        (newly > 0 ? ` (${newly} newly recorded — future runs will not repeat them)` : " (all already recorded)"),
+    );
   }
 
   const positions = postedPositions(threads);

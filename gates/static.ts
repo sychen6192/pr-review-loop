@@ -18,6 +18,7 @@ import {
   TRIAGE_CONTEXT_LINES,
   TRIAGE_MODEL,
   WORKDIR,
+  excludedCategories,
   severityRank,
   type Severity,
 } from "../config";
@@ -186,7 +187,7 @@ export async function triageAndConvert(
   runner: ModelRunner,
   result: StaticResult,
   files: FileDiff[],
-): Promise<{ findings: AnchoredFinding[]; triaged: number; dropped: number }> {
+): Promise<{ findings: AnchoredFinding[]; triaged: number; dropped: number; excluded: number }> {
   const kept: ToolFinding[] = [...result.facts];
   let dropped = 0;
   let triaged = 0;
@@ -267,13 +268,23 @@ export async function triageAndConvert(
   const byPath = new Map<string, FileDiff>();
   for (const f of files) byPath.set(f.path.replace(/^\/+/, ""), f);
 
+  // Same exclusion rule the model findings get in aggregate: a category the config turned
+  // off is off for tools too, and the drop is counted rather than silent.
+  const excludedCats = new Set(excludedCategories());
+  let excluded = 0;
+
   const findings: AnchoredFinding[] = [];
   for (const f of kept) {
     const fd = byPath.get(f.file.replace(/^\/+/, ""));
     if (!fd) continue;
+    const category = categoryForRule(f);
+    if (excludedCats.has(category)) {
+      excluded++;
+      continue;
+    }
     const lineText = fd.rightLines[f.line - 1] ?? "";
     findings.push({
-      category: categoryForRule(f),
+      category,
       severity: f.severity,
       confidence: f.tier === "fact" ? 1 : 0.8,
       file: fd.path,
@@ -299,7 +310,10 @@ export async function triageAndConvert(
       },
     });
   }
-  return { findings, triaged, dropped };
+  if (excluded > 0) {
+    log(`static: ${excluded} tool findings dropped, category excluded by config (${[...excludedCats].join(", ")})`);
+  }
+  return { findings, triaged, dropped, excluded };
 }
 
 // Maps a tool rule to a review category so tool findings sit in the same taxonomy as

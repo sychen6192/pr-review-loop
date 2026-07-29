@@ -1,13 +1,17 @@
 // Comment rendering. Every comment carries hidden markers so re-runs can recognise their
 // own threads: the bot marker identifies authorship, the fingerprint identifies the issue.
-import { BOT_MARKER, MAX_INLINE_COMMENTS, MIN_INLINE_SEVERITY } from "../config";
+import { BOT_MARKER, MAX_INLINE_COMMENTS, MIN_INLINE_SEVERITY, excludedCategories } from "../config";
 import type { AnchoredFinding, ReqVerdict, RequirementResult } from "../libs/types";
 import type { AggregateResult } from "../gates/aggregate";
+import type { CategoryHint } from "../libs/learnings";
 import type { ReviewContext } from "../ado/intake";
 import type { StaticResult } from "../gates/static";
 
 export const SUMMARY_MARKER = "<!-- prloop:summary -->";
 export const fpMarker = (fp: string) => `<!-- prloop:fp=${fp} -->`;
+// Lets a dismissal be attributed to a category later without re-deriving it from prose —
+// the raw material for "the team keeps dismissing category X" hints.
+export const catMarker = (cat: string) => `<!-- prloop:cat=${cat} -->`;
 
 const SEVERITY_LABEL: Record<string, string> = {
   critical: "🔴 Critical",
@@ -34,6 +38,7 @@ const SUPPRESSED_LABEL: Record<string, string> = {
   severity: `below the ${MIN_INLINE_SEVERITY} comment threshold`,
   cap: `over the ${MAX_INLINE_COMMENTS}-per-run cap`,
   "no-corroboration": "single model, unverified - no corroboration",
+  dismissed: "matches a finding a reviewer previously dismissed (wontFix/byDesign)",
 };
 
 const FAILURE_LABEL: Record<string, string> = {
@@ -49,7 +54,7 @@ const detailsOpen = (title: string) => `<details><summary>${title}</summary>`;
 
 export function renderFindingComment(f: AnchoredFinding): string {
   const parts: string[] = [
-    `${BOT_MARKER}${fpMarker(f.fingerprint)}`,
+    `${BOT_MARKER}${fpMarker(f.fingerprint)}${catMarker(f.category)}`,
     `**${SEVERITY_LABEL[f.severity] ?? f.severity}** · ${CATEGORY_LABEL[f.category] ?? f.category}`,
     "",
     f.claim,
@@ -80,6 +85,8 @@ export interface SummaryInput {
   omittedFiles: string[];
   appliedRules: string[];
   staticResult?: StaticResult;
+  // "The team keeps dismissing category X" — surfaced as a config suggestion, never applied.
+  dismissalHints?: CategoryHint[];
   durationSec: number;
   runDir: string;
 }
@@ -232,6 +239,17 @@ export function renderSummary(input: SummaryInput): string {
   }
   for (const e of input.finderErrors) {
     notes.push(`Model ${e.model} produced no result: ${e.error}`);
+  }
+  if (agg.stats.excluded > 0) {
+    notes.push(
+      `${agg.stats.excluded} findings dropped, category excluded by config (PRR_EXCLUDE_CATEGORIES=${excludedCategories().join(",")})`,
+    );
+  }
+  for (const h of input.dismissalHints ?? []) {
+    notes.push(
+      `Reviewers have dismissed ${h.count} ${h.category} findings in this repo — if that category ` +
+        `is not wanted here, set PRR_EXCLUDE_CATEGORIES=${h.category} to stop reporting it`,
+    );
   }
   if (agg.stats.raw > 0) {
     const killed = agg.stats.anchored - agg.stats.survived;

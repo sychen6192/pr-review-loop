@@ -100,6 +100,8 @@ export interface DismissalRecord {
   fingerprint: string;
   file: string;
   claim: string;
+  // From the comment's category marker; absent on comments posted by older versions.
+  category?: string;
   resolvedAs: string;
 }
 
@@ -112,6 +114,7 @@ export interface DismissalRecord {
 export function collectDismissals(threads: Thread[]): DismissalRecord[] {
   const out: DismissalRecord[] = [];
   const fpRe = /<!-- prloop:fp=([0-9a-f]+) -->/;
+  const catRe = /<!-- prloop:cat=([a-z-]+) -->/;
   for (const t of threads) {
     const dismissed = t.status === "wontFix" || t.status === "byDesign" || t.status === "closed";
     if (!dismissed) continue;
@@ -123,6 +126,7 @@ export function collectDismissals(threads: Thread[]): DismissalRecord[] {
       fingerprint: fp,
       file: t.threadContext?.filePath ?? "",
       claim: (c.content ?? "").split("\n").find((l) => l && !l.startsWith("<") && !l.startsWith("**")) ?? "",
+      category: catRe.exec(c.content ?? "")?.[1],
       resolvedAs: t.status ?? "",
     });
   }

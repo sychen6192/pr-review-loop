@@ -256,6 +256,18 @@ npx tsx scripts/probe.ts '<PR URL>'
   `https://tfs.corp.com/tfs/{collection}`（含虛擬目錄）。若仍不對，用 `PRR_ADO_BASE_URL` 覆蓋。
 - **on-prem 出現 api-version 不支援。** 各版本上限不同：Server 2019 → `5.0`、
   2020 → `6.0`、2022 → `7.0`、雲端 → `7.1`。設 `PRR_ADO_API_VERSION` 調整。
+- **`ECONNREFUSED` / 連線被拒。** 最常見的原因是**公司 proxy**。
+  **Node 內建的 `fetch` 不會讀 `HTTP_PROXY` / `HTTPS_PROXY`**（curl、git、pip 都會讀，
+  所以那些工具能通、Node 卻不行）。prloop 會自己讀這些變數並套用，但前提是變數有設。
+
+  ```bash
+  export HTTPS_PROXY=http://proxy.corp:8080
+  # 內部主機（自架模型端點等）必須繞過 proxy，否則會被導去外部出口
+  export NO_PROXY=localhost,127.0.0.1,.corp.local
+  ```
+
+  `probe` 的第 1 節會顯示目前的 proxy 設定，第 4 節會標明是直連還是經由 proxy——
+  有 proxy 時 TLS 檢測會走 CONNECT 隧道，不會把防火牆的拒絕誤判成憑證問題。
 - **TLS 憑證錯誤（企業 TLS 攔截）。** 瀏覽器能開但工具連不上，幾乎都是這個。
   **Node 有自己內建的 CA 清單，不讀作業系統的信任存放區**——所以公司的攔截設備
   （Zscaler、Blue Coat 等）重簽的憑證，瀏覽器接受、Node 不接受。

@@ -11,6 +11,7 @@ import {
   RUNNER_KIND,
 } from "../config";
 import { logVerbose } from "../libs/log";
+import { dispatcherFor } from "../libs/proxy";
 import type { ChatRequest, ChatResponse, ModelRunner } from "../libs/types";
 
 interface OpenAIChoice {
@@ -60,7 +61,10 @@ export class OpenAICompatRunner implements ModelRunner {
         },
         body: JSON.stringify(body),
         signal: ctrl.signal,
-      });
+        // An internal model endpoint usually must NOT go through the external proxy;
+        // list its host in NO_PROXY and dispatcherFor returns undefined for it.
+        dispatcher: dispatcherFor(url),
+      } as RequestInit);
       const text = await res.text();
       if (!res.ok) {
         return { text: "", model: req.model, error: `HTTP ${res.status}: ${text.slice(0, 500)}` };

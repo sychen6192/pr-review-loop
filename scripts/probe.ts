@@ -5,10 +5,12 @@
 // doctor tells you whether things work. probe tells you why they don't.
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as net from "node:net";
 import * as tls from "node:tls";
 import { ADO_API_VERSION, ADO_PAT, PRLOOP_ROOT } from "../config";
 import { authHeader, describeAuthMode } from "../ado/auth";
-import { parsePrUrl, prBase, repoBase } from "../ado/client";
+import { parsePrUrl, prBase } from "../ado/client";
+import { HTTPS_PROXY, HTTP_PROXY, bypassesProxy, proxySummary, redactProxy } from "../libs/proxy";
 
 // api-versions worth trying, newest first. Cloud speaks 7.1; on-prem tops out lower
 // depending on the server release.
@@ -111,10 +113,62 @@ async function rawGet(url: string, header: string): Promise<void> {
 async function probeTls(host: string, port: number): Promise<void> {
   console.log("\n=== 4. TLS 握手 ===");
 
-  const connect = (rejectUnauthorized: boolean) =>
-    new Promise<{ ok: boolean; err?: string; code?: string; chain: string[]; issuer: string }>((resolve) => {
+  const proxy = bypassesProxy(host) ? "" : HTTPS_PROXY || HTTP_PROXY;
+  if (proxy) {
+    line("經由 proxy", redactProxy(proxy));
+  } else {
+    line("連線方式", "直接連線（未設 proxy，或此主機在 NO_PROXY 中）");
+  }
+
+  // With a proxy in play the handshake has to run inside a CONNECT tunnel; testing a direct
+  // socket would report the firewall's refusal and wrongly blame the certificate.
+  const openSocket = (): Promise<{ sock?: net.Socket; err?: string; code?: string }> =>
+    new Promise((resolve) => {
+      if (!proxy) {
+        const s = net.connect({ host, port, timeout: 15_000 });
+        s.once("connect", () => resolve({ sock: s }));
+        s.once("error", (e: NodeJS.ErrnoException) => resolve({ err: e.message, code: e.code }));
+        s.once("timeout", () => {
+          s.destroy();
+          resolve({ err: "TCP 連線逾時（15s）" });
+        });
+        return;
+      }
+      const pu = new URL(proxy);
+      const s = net.connect({
+        host: pu.hostname,
+        port: Number(pu.port || (pu.protocol === "https:" ? 443 : 80)),
+        timeout: 15_000,
+      });
+      s.once("error", (e: NodeJS.ErrnoException) => resolve({ err: `連不到 proxy：${e.message}`, code: e.code }));
+      s.once("timeout", () => {
+        s.destroy();
+        resolve({ err: "連 proxy 逾時（15s）" });
+      });
+      s.once("connect", () => {
+        const auth = pu.username
+          ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password)}`).toString("base64")}\r\n`
+          : "";
+        s.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n${auth}\r\n`);
+        s.once("data", (buf: Buffer) => {
+          const head = buf.toString("utf8").split("\r\n")[0] ?? "";
+          if (/ 200 /.test(head)) resolve({ sock: s });
+          else {
+            s.destroy();
+            resolve({ err: `proxy 拒絕 CONNECT：${head}` });
+          }
+        });
+      });
+    });
+
+  const connect = async (rejectUnauthorized: boolean) => {
+    const opened = await openSocket();
+    if (!opened.sock) {
+      return { ok: false, err: opened.err, code: opened.code, chain: [] as string[], issuer: "" };
+    }
+    return new Promise<{ ok: boolean; err?: string; code?: string; chain: string[]; issuer: string }>((resolve) => {
       const socket = tls.connect(
-        { host, port, servername: host, rejectUnauthorized, timeout: 15_000 },
+        { socket: opened.sock, servername: host, rejectUnauthorized, timeout: 15_000 },
         () => {
           const cert = socket.getPeerCertificate(true) as tls.DetailedPeerCertificate | undefined;
           const chain: string[] = [];
@@ -147,6 +201,7 @@ async function probeTls(host: string, port: number): Promise<void> {
         resolve({ ok: false, err: "TLS 握手逾時（15s）", chain: [], issuer: "" });
       });
     });
+  };
 
   line("目標", `${host}:${port}`);
   const strict = await connect(true);
@@ -164,7 +219,14 @@ async function probeTls(host: string, port: number): Promise<void> {
   const loose = await connect(false);
   if (!loose.ok) {
     console.log(`  連 TCP/TLS 都建立不起來：${loose.err}`);
-    console.log("  → 這不是憑證問題，是網路不通。檢查 VPN、防火牆，或是否需要 HTTPS_PROXY。");
+    if (proxy) {
+      console.log("  → 已嘗試經由 proxy，仍連不上。確認 proxy 位址正確、且允許連往這個主機。");
+    } else {
+      console.log(
+        "  → 這不是憑證問題，是網路不通。若這台機器只能透過公司 proxy 對外，" +
+          "請設定 HTTPS_PROXY（Node 內建 fetch 不會自己讀，prloop 會）。",
+      );
+    }
     return;
   }
 
@@ -213,6 +275,10 @@ async function main() {
     "NODE_EXTRA_CA_CERTS",
   ]);
   line("生效的 api-version", ADO_API_VERSION);
+  line("proxy 設定", proxySummary());
+  if (!HTTPS_PROXY && !HTTP_PROXY) {
+    console.log("  （若公司網路只能透過 proxy 對外，未設這個變數會直接連線失敗）");
+  }
   if (!/^\d+\.\d+$/.test(ADO_API_VERSION)) {
     console.log(
       `  ⚠️  「${ADO_API_VERSION}」不是合法格式。ADO 只接受 x.y（例如 7.1、6.0），` +

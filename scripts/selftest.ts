@@ -11,6 +11,7 @@ import { buildDiffPayload } from "../libs/payload";
 import { htmlToText } from "../libs/html";
 import { globToRegExp, loadRules, selectRules } from "../libs/rules";
 import { finalize } from "../gates/aggregate";
+import { bypassesProxy } from "../libs/proxy";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
 import { filterToChangedLines } from "../gates/static";
 import { parseToolOutput } from "../profiles/parsers";
@@ -671,6 +672,23 @@ section("真實 PR 錨定（植入缺陷的靶場）");
       check(`${e.name}（不得回傳 anchor）`, r.anchor === undefined);
     }
   }
+}
+
+section("NO_PROXY 比對規則");
+{
+  // Exercises the real matcher, not a copy of it — the second argument exists so this can
+  // be tested without the module-level value captured at import.
+  const no = (list: string, host: string) => bypassesProxy(host, list);
+  check("完全相同的主機命中", no("internal.corp", "internal.corp"));
+  check("子網域命中", no("corp", "ai.internal.corp"));
+  check("前置點的寫法命中", no(".corp", "ai.internal.corp"));
+  check("萬用字元前綴命中", no("*.corp", "ai.internal.corp"));
+  check("不相關的主機不命中", !no("internal.corp", "dev.azure.com"));
+  check("部分字串不應誤命中", !no("corp", "notcorp.com"));
+  check("單獨的 * 代表全部繞過", no("*", "anything.example"));
+  check("多筆逗號分隔", no("a.com, internal.corp ,b.com", "x.internal.corp"));
+  check("空的 NO_PROXY 不繞過", !no("", "dev.azure.com"));
+  check("大小寫不敏感", no("INTERNAL.CORP", "ai.Internal.Corp"));
 }
 
 console.log(`\n結果：${passed} 通過、${failed} 失敗`);

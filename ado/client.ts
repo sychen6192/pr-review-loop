@@ -5,6 +5,7 @@ import { ADO_API_VERSION, ADO_BASE_URL, ADO_MAX_RETRIES, ADO_TIMEOUT_MS } from "
 import { logVerbose } from "../libs/log";
 import type { PrRef } from "../libs/types";
 import { authHeader } from "./auth";
+import { dispatcherFor } from "../libs/proxy";
 
 export class AdoError extends Error {
   constructor(
@@ -119,7 +120,9 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
         headers,
         body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
         signal: ctrl.signal,
-      });
+        // Node's fetch ignores HTTP(S)_PROXY; the dispatcher is how a proxy gets used at all.
+        dispatcher: dispatcherFor(u.toString()),
+      } as RequestInit);
       clearTimeout(timer);
 
       // A PAT that lacks scope gets a 203 + sign-in HTML page rather than a 401.
@@ -185,7 +188,12 @@ function diagnose(e: unknown): string {
   if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(all)) {
     return "DNS 查不到這個主機。確認網址正確，且這台機器連得到內網（VPN？）";
   }
-  if (/ECONNREFUSED/i.test(all)) return "連線被拒。確認主機與連接埠正確、服務有在跑";
+  if (/ECONNREFUSED/i.test(all)) {
+    return (
+      "連線被拒。若這台機器只能透過公司 proxy 對外，請確認 HTTPS_PROXY 已設定" +
+      "（prloop 會自動使用；Node 內建的 fetch 本身不會讀這個變數）"
+    );
+  }
   if (/ETIMEDOUT|ECONNRESET|UND_ERR_CONNECT_TIMEOUT/i.test(all)) {
     return "連線逾時。多半是防火牆或需要 proxy（設 HTTPS_PROXY 環境變數）";
   }

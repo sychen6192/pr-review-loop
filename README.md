@@ -14,7 +14,7 @@ Network / TLS / proxy problems: [docs/troubleshooting.md](./docs/troubleshooting
 
 ## Architecture
 
-One pass, four steps. No inner loop, no retries, no agentic wandering. The "loop" is the
+One pass, four steps. No inner loop, no agentic wandering. The "loop" is the
 outer one: re-run per PR iteration with `--since auto`.
 
 ```
@@ -27,7 +27,12 @@ Step 4  publish                     sticky summary + inline threads           0
 ```
 
 `N` = finder models, `M` = anchored findings, `R` = `PRR_SKEPTIC_ROUNDS`.
-All model calls share one concurrency pool (`PRR_LLM_CONCURRENCY`, default 6).
+All model calls share one concurrency pool (`PRR_LLM_CONCURRENCY`, default 6) and retry once
+on transient failures.
+
+The requirement axis is not part of the step-2 barrier — its result is only needed at publish
+time, and the gate is non-fatal, so it must not be able to hold the pipeline. Step 3 starts as
+soon as the finders return.
 
 ### The model never emits a line number
 
@@ -107,7 +112,7 @@ either a PAT with **Code (Read & Write)**, or just `az login`.
 git clone <repo> prloop && cd prloop
 npm install
 cp .env.example .env
-npm run check                                  # typecheck + 204 offline tests
+npm run check                                  # typecheck + 236 offline tests
 npx tsx scripts/doctor.ts '<PR URL>' --smoke   # preflight + one live model call
 ```
 
@@ -138,7 +143,9 @@ prloop '<PR URL>' --since auto  # incremental: only commits since the last revie
 URL format: `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`.
 On-prem and `visualstudio.com` are derived from the URL itself, virtual directories included.
 
-Exit codes: `0` clean · `2` unmet criteria or critical/high findings · `1` fatal.
+Exit codes: `0` clean · `2` unmet criteria or critical/high findings · `3` **review
+incomplete** (a stage crashed — nothing blocking was found, but the check that would have
+found it never ran) · `1` fatal.
 
 `--since auto` reads the last reviewed iteration back out of prloop's own summary comment —
 state lives on the PR, so a pipeline agent, your laptop and a cron box need no shared disk.
@@ -177,6 +184,7 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_SKEPTIC_MODELS` | — | empty = no verification runs |
 | `PRR_SKEPTIC_ROUNDS` | `1` | 3 gives a majority vote worth the name |
 | `PRR_LLM_CONCURRENCY` | `6` | in-flight model calls across all stages; match your endpoint's batch size |
+| `PRR_LLM_RETRIES` | `1` | retries on transient model failures (never on 4xx) |
 | `PRR_MIN_INLINE_SEVERITY` | `medium` | below this → summary only |
 | `PRR_MAX_INLINE_COMMENTS` | `10` | code axis (requirement axis has its own budget of 3) |
 | `PRR_REQUIRE_CORROBORATION` | `1` | `0` publishes unverified single-source findings |

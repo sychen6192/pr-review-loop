@@ -8,6 +8,7 @@ import {
   LLM_STRUCTURED_OUTPUT,
   LLM_TEMPERATURE,
   LLM_CONCURRENCY,
+  LLM_RETRIES,
   LLM_TIMEOUT_MS,
   RUNNER_KIND,
 } from "../config";
@@ -131,6 +132,32 @@ export class OpenAICompatRunner implements ModelRunner {
  * requirement axis, the skeptic and triage — the stages overlap, and per-stage limits would
  * still let their sum swamp the endpoint.
  */
+/**
+ * True for failures where the same request may well succeed on a second attempt.
+ *
+ * Deliberately conservative: an HTTP 4xx is the backend telling us the request itself is
+ * wrong (bad schema, bad auth, unknown model) and retrying only wastes the endpoint's time.
+ * 408 and 429 are the exceptions — those are about timing, not about the request.
+ */
+export function isTransientModelError(error: string): boolean {
+  if (/^HTTP (4\d\d)/.test(error)) return /^HTTP (408|429)/.test(error);
+  return true;
+}
+
+function withRetries(inner: ModelRunner, attempts: number): ModelRunner {
+  if (attempts <= 0) return inner;
+  return {
+    async chat(req) {
+      let last = await inner.chat(req);
+      for (let i = 0; i < attempts && last.error && isTransientModelError(last.error); i++) {
+        logVerbose(`retrying ${req.model} after transient failure: ${last.error.slice(0, 160)}`);
+        last = await inner.chat(req);
+      }
+      return last;
+    },
+  };
+}
+
 function throttled(inner: ModelRunner, limit: number): ModelRunner {
   if (limit <= 0) return inner;
   const sem = new Semaphore(limit);
@@ -153,5 +180,7 @@ export async function createRunner(): Promise<ModelRunner> {
     RUNNER_KIND === "opencode"
       ? new (await import("./opencode")).OpencodeRunner()
       : new OpenAICompatRunner();
-  return throttled(inner, LLM_CONCURRENCY);
+  // Throttle innermost: each retry attempt re-queues for a slot instead of one call holding
+  // a slot for its whole retry sequence.
+  return withRetries(throttled(inner, LLM_CONCURRENCY), LLM_RETRIES);
 }

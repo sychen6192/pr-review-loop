@@ -66,6 +66,10 @@ export const AGENT_TIMEOUT_MS = Number(process.env.PRR_AGENT_TIMEOUT_MS ?? 15 * 
 export const LLM_BASE_URL = process.env.PRR_LLM_BASE_URL ?? "http://localhost:4000/v1";
 export const LLM_API_KEY = process.env.PRR_LLM_API_KEY ?? "dummy";
 export const LLM_TIMEOUT_MS = Number(process.env.PRR_LLM_TIMEOUT_MS ?? 900_000);
+// Model calls in flight at once, across every stage. The skeptic fans out over every
+// anchored finding, so an uncapped run can put dozens of requests on a self-hosted endpoint
+// simultaneously; they then queue in the engine while their own timeouts run down. 0 = no cap.
+export const LLM_CONCURRENCY = Number(process.env.PRR_LLM_CONCURRENCY ?? 6);
 // M1 runs a single finder; M3 turns this into a comma-separated heterogeneous fleet.
 export const FINDER_MODELS = (process.env.PRR_FINDER_MODELS ?? "qwen3-coder")
   .split(",")
@@ -100,6 +104,10 @@ export const SKEPTIC_ROUNDS = Number(process.env.PRR_SKEPTIC_ROUNDS ?? 1);
 // Source lines shown around the finding. Small on purpose: models degrade with unlimited
 // context, and a skeptic that needs the whole file is guessing.
 export const SKEPTIC_CONTEXT_LINES = Number(process.env.PRR_SKEPTIC_CONTEXT_LINES ?? 25);
+// Skeptic calls are small and numerous, so they get a much tighter deadline than a finder
+// reading a whole diff. Kept separate because a skeptic timeout fails open: one slow verifier
+// must not hold the run for the full finder timeout and then wave the finding through anyway.
+export const SKEPTIC_TIMEOUT_MS = Number(process.env.PRR_SKEPTIC_TIMEOUT_MS ?? 180_000);
 // Findings need corroboration to be published: either N finders found it independently, or
 // a skeptic actively cleared it. A lone unverified finding stays in the summary instead.
 export const MIN_CONSENSUS_SOURCES = Number(process.env.PRR_MIN_CONSENSUS_SOURCES ?? 2);

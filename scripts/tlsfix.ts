@@ -21,7 +21,17 @@ interface Candidate {
 }
 
 function gatherCandidates(): Candidate[] {
-  const out: Candidate[] = [{ name: "Node 內建清單（不加任何設定）" }];
+  // Named for what it actually exercises: no extra `ca`, so the process inherits whatever
+  // NODE_EXTRA_CA_CERTS is already set to. Calling it "built-in only" misleads when the
+  // variable is set.
+  const current = process.env["NODE_EXTRA_CA_CERTS"];
+  const out: Candidate[] = [
+    {
+      name: current
+        ? `目前的環境設定（NODE_EXTRA_CA_CERTS=${current}）`
+        : "Node 內建清單（未設定任何額外憑證）",
+    },
+  ];
   const seen = new Set<string>();
 
   const add = (file: string, label: string) => {
@@ -101,12 +111,14 @@ async function tryCandidate(host: string, port: number, c: Candidate): Promise<s
     return `連線失敗：${e instanceof Error ? e.message : String(e)}`;
   }
   return new Promise<string>((resolve) => {
-    // Passing `ca` in-process avoids respawning Node once per candidate; the effect on
-    // verification is the same as NODE_EXTRA_CA_CERTS.
     const opts: tls.ConnectionOptions = { socket: sock, servername: host, timeout: 20_000 };
     if (c.caFile) {
       try {
-        opts.ca = fs.readFileSync(c.caFile);
+        // NODE_EXTRA_CA_CERTS *appends* to the built-in roots, whereas the `ca` option
+        // *replaces* them. Testing with the file alone would discard every public CA and
+        // report a false failure for any bundle that is missing one — so reproduce the
+        // append semantics explicitly.
+        opts.ca = [...tls.rootCertificates, fs.readFileSync(c.caFile, "utf8")];
       } catch (e) {
         resolve(`讀不到憑證檔：${e instanceof Error ? e.message : String(e)}`);
         return;
@@ -249,8 +261,12 @@ async function main() {
   console.log(`可用的設定有 ${winners.length} 種。`);
   console.log("");
   if (builtinWorks) {
-    console.log("  不需要任何憑證設定 —— Node 內建清單就能驗證通過。");
-    console.log("  若 prloop 仍失敗，問題不在憑證，請看 probe 的第 5 節（HTTP 狀態）。");
+    console.log(
+      process.env["NODE_EXTRA_CA_CERTS"]
+        ? `  ✅ 目前的設定就可以用（NODE_EXTRA_CA_CERTS=${process.env["NODE_EXTRA_CA_CERTS"]}）。\n     把它加進 ~/.bashrc 就一勞永逸。`
+        : "  不需要任何憑證設定 —— Node 內建清單就能驗證通過。",
+    );
+    console.log("  憑證這一關已通過，若 prloop 仍失敗請看 probe 的第 5 節（HTTP 狀態）。");
     console.log("");
     console.log(`     npx tsx scripts/probe.ts '${url}'`);
   } else {

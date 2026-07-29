@@ -237,6 +237,19 @@ applyTo: "**/*.java"
 
 **先跑 `npx tsx scripts/doctor.ts '<PR URL>' --smoke`**，多數問題會直接指出修法。
 
+連不上而 doctor 說不清楚時，用 **probe** 直測：
+
+```bash
+npx tsx scripts/probe.ts '<PR URL>'
+```
+
+它會攤開 doctor 隱藏起來的東西：每個設定值**實際來自哪裡**（`.env` / shell 環境變數 /
+預設值）、組出來的完整 URL、原始 HTTP 狀態與**伺服器自己的錯誤訊息**，最後逐一測試
+各 api-version 找出這台伺服器接受哪個。
+
+⚠️ **`.env` 永遠不會覆蓋已存在的環境變數**（避免蓋掉 CI 注入的值）。所以 shell 裡若有
+`export PRR_XXX=...`，`.env` 的同名設定會被靜默忽略。probe 的第 1 節會標出這種情況。
+
 - **on-prem（Azure DevOps Server）連不上。** 先跑 `doctor <PR URL>`，它會印出 **API base**
   與**實際請求位址**——這兩行就能看出問題。API 位址是從你給的 PR URL 推導的，
   `https://tfs.corp.com/tfs/{collection}/{project}/_git/...` 會正確解析出

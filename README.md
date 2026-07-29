@@ -286,10 +286,25 @@ npx tsx scripts/probe.ts '<PR URL>'
   ⚠️ 這份是從連線當下取得的——若攔截你的不是你信任的對象就不該採用；正式使用
   建議改用 IT 提供的公司根 CA。
 
-  其他做法：
-  - Linux 上系統憑證包通常已含公司 CA：`export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`
-  - Node 22.15+ / 23.5+ 有 `--use-system-ca`，但**這個旗標不能放進 `NODE_OPTIONS`**，
-    所以搭配 `npx tsx` 用不了，只能直接 `node --use-system-ca`。
+  **Node 24 以上最簡單**——直接用系統信任存放區，不需要憑證檔：
+
+  ```bash
+  export NODE_OPTIONS=--use-system-ca
+  ```
+
+  版本差異（皆為實測）：
+
+  | Node 版本 | `--use-system-ca` | 放進 `NODE_OPTIONS` |
+  | --- | --- | --- |
+  | 24+ | ✅ | ✅ 可以，搭配 `npx tsx` 最方便 |
+  | 22.15–23.x | ✅ | ❌ 不允許，只能 `node --use-system-ca` 直接跑 |
+  | 22.14 以下 | ❌ 沒有這個旗標 | — |
+
+  這個旗標只是讓 Node 改讀作業系統的信任存放區，**不會放行未受信任的憑證**
+  （對自簽憑證實測仍然拒絕）。
+
+  其他做法：Linux 上系統憑證包通常已含公司 CA，可試
+  `export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`。
 
   確認用途可以暫時 `NODE_TLS_REJECT_UNAUTHORIZED=0`，但**不要留著**——那會關閉所有
   憑證驗證，等於接受任何中間人。確認完立刻改回 `NODE_EXTRA_CA_CERTS`。

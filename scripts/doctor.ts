@@ -23,6 +23,7 @@ import { adoGet, parsePrUrl, prBase } from "../ado/client";
 import { describeAuthMode } from "../ado/auth";
 import { existsSync } from "node:fs";
 import { commandExists, run } from "../libs/shell";
+import { proxySummary } from "../libs/proxy";
 import { PROFILES } from "../profiles";
 import { createRunner } from "../models/runner";
 import { FINDINGS_SCHEMA } from "../models/schemas";
@@ -52,6 +53,12 @@ async function main() {
   const major = Number(process.versions.node.split(".")[0]);
   if (major >= 20) ok("Node.js", `v${process.versions.node}`);
   else bad(`Node.js v${process.versions.node} 過舊`, "需要 v20 以上（本工具使用內建 fetch）");
+  if (process.env["NODE_EXTRA_CA_CERTS"]) {
+    ok("額外 CA 憑證", process.env["NODE_EXTRA_CA_CERTS"]);
+  } else if ((process.env["NODE_OPTIONS"] ?? "").includes("use-system-ca")) {
+    ok("憑證來源", "系統信任存放區（--use-system-ca）");
+  }
+  ok("proxy", proxySummary());
 
   console.log("\nAzure DevOps 認證");
   ok("認證模式", await describeAuthMode());

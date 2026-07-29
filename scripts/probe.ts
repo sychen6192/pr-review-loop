@@ -11,6 +11,8 @@ import { ADO_API_VERSION, ADO_PAT, PRLOOP_ROOT } from "../config";
 import { authHeader, describeAuthMode } from "../ado/auth";
 import { parsePrUrl, prBase } from "../ado/client";
 import { HTTPS_PROXY, HTTP_PROXY, bypassesProxy, proxySummary, redactProxy } from "../libs/proxy";
+import { commandExists, run } from "../libs/shell";
+import { AZ_BIN } from "../config";
 
 // api-versions worth trying, newest first. Cloud speaks 7.1; on-prem tops out lower
 // depending on the server release.
@@ -318,6 +320,74 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
   }
 }
 
+// Azure DevOps' first-party application id. A token minted for any other resource is
+// accepted by the CLI but rejected by the API, which surfaces as a sign-in page rather
+// than a clear error.
+const ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798";
+
+/**
+ * Same request, issued by the az CLI instead of Node.
+ *
+ * The az CLI is Python and has its own proxy and certificate configuration, so this
+ * separates two failure classes that otherwise look identical: az succeeding while Node
+ * fails means the account and permissions are fine and the problem is Node's TLS or proxy
+ * setup; both failing points at credentials, permissions or the network itself.
+ */
+async function probeViaAz(url: string): Promise<void> {
+  console.log("\n=== 7. 用 az CLI 打同一支 API（對照組）===");
+
+  if (!(await commandExists(AZ_BIN))) {
+    line("az CLI", "未安裝，略過此對照");
+    return;
+  }
+  const acct = await run(AZ_BIN, ["account", "show", "--query", "user.name", "-o", "tsv"], 60_000);
+  if (acct.code !== 0) {
+    line("az 登入狀態", "尚未登入");
+    console.log("  → 執行 az login 之後再試。");
+    return;
+  }
+  line("az 登入身分", acct.stdout.trim());
+
+  const tok = await run(
+    AZ_BIN,
+    ["account", "get-access-token", "--resource", ADO_RESOURCE_ID, "--query", "expiresOn", "-o", "tsv"],
+    120_000,
+  );
+  if (tok.code !== 0) {
+    line("取得 ADO token", `失敗：${tok.stderr.trim().slice(0, 200)}`);
+    return;
+  }
+  line("ADO token 有效至", tok.stdout.trim());
+
+  const res = await run(
+    AZ_BIN,
+    ["rest", "--method", "get", "--resource", ADO_RESOURCE_ID, "--url", url, "--query", "title", "-o", "tsv"],
+    120_000,
+  );
+  if (res.code === 0) {
+    line("az 讀取 PR", `✅ 成功：${res.stdout.trim().slice(0, 80)}`);
+    console.log("");
+    console.log("  → az 能通但 prloop 不能，代表帳號與權限沒問題，問題在 Node 這一側：");
+    console.log("     憑證（NODE_OPTIONS=--use-system-ca 或 NODE_EXTRA_CA_CERTS）或 proxy。");
+    console.log("     az 是 Python，用的是 REQUESTS_CA_BUNDLE，與 Node 的信任來源不同。");
+  } else {
+    const err = (res.stderr || res.stdout).trim();
+    line("az 讀取 PR", `❌ 失敗`);
+    console.log(`  ${err.slice(0, 400)}`);
+    console.log("");
+    console.log("  → az 也失敗，代表問題不在 Node，而在帳號、權限或網路本身。");
+    if (/certificate|SSL|CERTIFICATE_VERIFY/i.test(err)) {
+      console.log("     看起來是憑證問題。az 用的是 REQUESTS_CA_BUNDLE 這個變數。");
+    }
+    if (/403|Forbidden|does not have permission/i.test(err)) {
+      console.log("     403：帳號通過認證但沒有這個 repo 的存取權。");
+    }
+    if (/404|TF401019|does not exist/i.test(err)) {
+      console.log("     404：PR id、repo 名稱或 project 名稱不對。");
+    }
+  }
+}
+
 async function main() {
   const url = process.argv[2];
   if (!url) {
@@ -395,6 +465,8 @@ async function main() {
       console.log(`  api-version=${v.padEnd(4)} → 連線失敗：${e instanceof Error ? e.message : String(e)}`);
     }
   }
+
+  await probeViaAz(`${prBase(ref)}?api-version=${ADO_API_VERSION}`);
 
   console.log("\n=== 結論 ===");
   if (working.length > 0) {

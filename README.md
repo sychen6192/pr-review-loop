@@ -22,11 +22,14 @@ Step 1  fetch PR changes            ADO REST → blob bytes → Myers diff      
 Step 2  ┌ static analysis           linters over PRR_WORKDIR                  0
         ├ requirement axis          work items vs diff                        1
         └ code axis                 N finders, same prompt, in parallel       N
-Step 3  anchor → skeptic → triage   quote → line number, then refutation      M×R + 1
+Step 3  anchor → filter → skeptic    quote → line number, then refutation      M×R + 1
+        → triage                    excluded/dismissed drop before the skeptic
 Step 4  publish                     sticky summary + inline threads           0
 ```
 
-`N` = finder models, `M` = anchored findings, `R` = `PRR_SKEPTIC_ROUNDS`.
+`N` = finder models, `R` = `PRR_SKEPTIC_ROUNDS`, and `M` = anchored findings **that survive
+the noise filter** — an excluded category or a previously dismissed finding costs no
+verification tokens at all.
 All model calls share one concurrency pool (`PRR_LLM_CONCURRENCY`, default 6) and retry once
 on transient failures.
 
@@ -77,6 +80,11 @@ do the filtering:
 3. **Consensus** — an inline comment needs corroboration: two finders found it independently,
    or a skeptic actively cleared it. A lone unverified finding stays in the summary.
 
+A fourth filter answers to the team rather than to the models: categories this repo does not
+want (`PRR_EXCLUDE_CATEGORIES`) and findings a reviewer already closed as *wontFix* never
+reach the skeptic. A human's decision outranks every gate above — corroboration cannot
+re-open what a reviewer closed.
+
 Three deliberate asymmetries:
 
 | Stage | Asymmetry | Why |
@@ -112,7 +120,7 @@ either a PAT with **Code (Read & Write)**, or just `az login`.
 git clone <repo> prloop && cd prloop
 npm install
 cp .env.example .env
-npm run check                                  # typecheck + 236 offline tests
+npm run check                                  # typecheck + 296 offline tests
 npx tsx scripts/doctor.ts '<PR URL>' --smoke   # preflight + one live model call
 ```
 
@@ -134,10 +142,16 @@ shell has it. Use the `PRR_`-prefixed names, which always win.
 
 ## Run
 
+`bin/prloop` is a wrapper that runs from any directory and hands corporate CA certificates
+down to child processes (`az`, `git`, `opencode`), which read only the environment. Call it
+by path, or put it on your `PATH` once:
+
 ```bash
-prloop '<PR URL>' --dry-run     # compute everything, post nothing — do this first
-prloop '<PR URL>'               # publish
-prloop '<PR URL>' --since auto  # incremental: only commits since the last review
+export PATH="$PWD/bin:$PATH"     # or: ln -s "$PWD/bin/prloop" ~/.local/bin/prloop
+
+prloop '<PR URL>' --dry-run      # compute everything, post nothing — do this first
+prloop '<PR URL>'                # publish
+prloop '<PR URL>' --since auto   # incremental: only commits since the last review
 ```
 
 URL format: `https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}`.
@@ -167,12 +181,11 @@ npx tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json>
 - **No duplicates on re-run** — each comment embeds a finding fingerprint.
 - **Stale threads auto-close** when their target code is gone. The criteria are narrow on
   purpose: wrongly closing a live issue is worse than leaving a stale comment.
-- **Dismissals are remembered.** A finding a reviewer closes as *wontFix*/*byDesign* is
-  recorded per repo (`runs/<org>/<project>/<repo>/dismissals.jsonl`) and never re-posted —
-  on this PR or any later one that carries the same code. Lines a human dismissed also stop
-  attracting rephrased versions of the same comment. Once a category collects
-  `PRR_DISMISSAL_HINT_THRESHOLD` (default 3) dismissals, the summary suggests
-  `PRR_EXCLUDE_CATEGORIES=<category>` — a suggestion only, never applied automatically.
+- **Dismissals stick.** A finding closed as *wontFix*/*byDesign* is recorded per repo
+  (`runs/<org>/<project>/<repo>/dismissals.jsonl`) and never posted again — not on this PR,
+  not on a later one carrying the same code, and not reworded onto the same lines. After
+  three dismissals in one category the summary suggests excluding it, and stops there:
+  prloop never writes its own config.
 - **Clean PR → one quiet line.** Style and formatting never get a comment; that's the linter's job.
 
 Every run writes `runs/<org>/<project>/<repo>/pr-<id>/iter-<N>-<ts>/`: the exact prompts

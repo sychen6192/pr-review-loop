@@ -91,18 +91,19 @@ export function dispatcherFor(url: string): Dispatcher | undefined {
   return cache.get(proxy);
 }
 
-/** Proxy URLs sometimes embed credentials; never print those. */
+/**
+ * Hides credentials in a proxy URL while leaving everything else byte-for-byte intact.
+ *
+ * Round-tripping through `new URL()` would normalise the value — notably dropping a default
+ * port, so `http://host:80` prints as `http://host/`. That reads as "my configured port
+ * vanished" and sends people looking for a bug in their own settings, so the redaction is
+ * done by string surgery on the credentials alone.
+ */
 export function redactProxy(p: string): string {
-  try {
-    const u = new URL(p);
-    if (u.username || u.password) {
-      u.username = u.username ? "***" : "";
-      u.password = u.password ? "***" : "";
-    }
-    return u.toString();
-  } catch {
-    return p;
-  }
+  return p.replace(/\/\/([^/@]+)@/, (_m, creds: string) => {
+    const [user] = creds.split(":");
+    return `//${user ? `${user}:***` : "***"}@`;
+  });
 }
 
 export function proxySummary(): string {

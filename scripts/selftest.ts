@@ -11,7 +11,7 @@ import { buildDiffPayload } from "../libs/payload";
 import { htmlToText } from "../libs/html";
 import { globToRegExp, loadRules, selectRules } from "../libs/rules";
 import { finalize } from "../gates/aggregate";
-import { bypassesProxy } from "../libs/proxy";
+import { bypassesProxy, redactProxy } from "../libs/proxy";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
 import { filterToChangedLines } from "../gates/static";
 import { parseToolOutput } from "../profiles/parsers";
@@ -710,6 +710,17 @@ section("NO_PROXY 比對規則");
   eq("沒有 PRR_ 時沿用慣用名稱", pick({ HTTPS_PROXY: "http://b" }, ...order), "http://b");
   eq("小寫也會被讀到", pick({ https_proxy: "http://c" }, ...order), "http://c");
   eq("全空時為空字串", pick({}, ...order), "");
+}
+section("proxy 顯示遮蔽");
+{
+  // Normalising through URL() drops a default port, which reads as lost configuration.
+  eq("預設埠必須保留", redactProxy("http://192.0.2.10:80"), "http://192.0.2.10:80");
+  eq("非預設埠保留", redactProxy("http://192.0.2.10:8080"), "http://192.0.2.10:8080");
+  eq("https 443 保留", redactProxy("https://p.corp:443"), "https://p.corp:443");
+  eq("不加多餘的斜線", redactProxy("http://p.corp"), "http://p.corp");
+  eq("密碼被遮蔽", redactProxy("http://user:secret@p.corp:80"), "http://user:***@p.corp:80");
+  eq("只有使用者名稱時也遮蔽", redactProxy("http://tok@p.corp:3128"), "http://tok:***@p.corp:3128");
+  check("原始密碼不會出現", !redactProxy("http://u:hunter2@p.corp").includes("hunter2"));
 }
 
 console.log(`\n結果：${passed} 通過、${failed} 失敗`);

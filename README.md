@@ -237,6 +237,14 @@ applyTo: "**/*.java"
 
 **先跑 `npx tsx scripts/doctor.ts '<PR URL>' --smoke`**，多數問題會直接指出修法。
 
+- **on-prem（Azure DevOps Server）連不上。** 先跑 `doctor <PR URL>`，它會印出 **API base**
+  與**實際請求位址**——這兩行就能看出問題。API 位址是從你給的 PR URL 推導的，
+  `https://tfs.corp.com/tfs/{collection}/{project}/_git/...` 會正確解析出
+  `https://tfs.corp.com/tfs/{collection}`（含虛擬目錄）。若仍不對，用 `PRR_ADO_BASE_URL` 覆蓋。
+- **on-prem 出現 api-version 不支援。** 各版本上限不同：Server 2019 → `5.0`、
+  2020 → `6.0`、2022 → `7.0`、雲端 → `7.1`。設 `PRR_ADO_API_VERSION` 調整。
+- **TLS 憑證錯誤（內部 CA）。** `export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem` 後重跑。
+  錯誤訊息會直接告訴你這件事，不用猜。
 - **203 / 登入頁錯誤。** PAT 無效或缺少 scope（需要 Code Read & Write）。若走 az CLI，
   多半是 `az login` 過期或登入到錯的 tenant，重跑 `az login` 即可。
 - **az 相關錯誤。** `doctor` 會顯示目前的認證模式與 az 登入身分。要強制走某一種認證，

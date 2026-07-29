@@ -17,9 +17,22 @@ export class AdoError extends Error {
   }
 }
 
-// Parses the PR URL people copy out of the browser, e.g.
-// https://dev.azure.com/{org}/{project}/_git/{repo}/pullrequest/{id}
-// Also accepts the older {org}.visualstudio.com host.
+/**
+ * Parses the PR URL people copy out of the browser.
+ *
+ * The collection base is taken from the URL itself rather than rebuilt from a configured
+ * host, because "everything before /{project}/_git/" is the one rule that holds across
+ * every deployment shape:
+ *
+ *   https://dev.azure.com/{org}/{proj}/_git/{repo}/pullrequest/{id}
+ *   https://{org}.visualstudio.com/{proj}/_git/{repo}/pullrequest/{id}
+ *   https://tfs.corp.com/tfs/{collection}/{proj}/_git/{repo}/pullrequest/{id}   ← on-prem
+ *   https://ado.corp.com/{collection}/{proj}/_git/{repo}/pullrequest/{id}       ← on-prem
+ *
+ * Rebuilding it from a host + the first path segment silently produced a wrong base on
+ * on-prem servers (the virtual-directory prefix was dropped and the collection was mistaken
+ * for the org), which surfaced far downstream as an unexplained connection error.
+ */
 export function parsePrUrl(raw: string): PrRef {
   let u: URL;
   try {
@@ -32,7 +45,7 @@ export function parsePrUrl(raw: string): PrRef {
   const prIdx = segs.findIndex((s) => s.toLowerCase() === "pullrequest");
   if (gitIdx < 0 || prIdx < 0 || prIdx !== gitIdx + 2) {
     throw new AdoError(
-      `PR URL 格式不符，預期 .../{org}/{project}/_git/{repo}/pullrequest/{id}，收到：${raw}`,
+      `PR URL 格式不符，預期 .../{project}/_git/{repo}/pullrequest/{id}，收到：${raw}`,
     );
   }
   const prId = Number(segs[prIdx + 1]);
@@ -41,22 +54,30 @@ export function parsePrUrl(raw: string): PrRef {
   }
 
   const repoId = segs[gitIdx + 1]!;
-  // dev.azure.com/{org}/{project}/_git/... vs {org}.visualstudio.com/{project}/_git/...
-  const isVsts = u.hostname.endsWith(".visualstudio.com");
-  const org = isVsts ? u.hostname.split(".")[0]! : segs[0];
   const project = segs[gitIdx - 1];
-  if (!org || !project || (!isVsts && gitIdx < 2)) {
-    throw new AdoError(`PR URL 缺少 org 或 project 區段：${raw}`);
-  }
-  return { org, project, repoId, prId };
+  if (!project) throw new AdoError(`PR URL 缺少 project 區段：${raw}`);
+
+  // Path segments before the project: the collection, plus any virtual directory on-prem.
+  // Empty on {org}.visualstudio.com, where the org lives in the hostname.
+  const collectionSegs = segs.slice(0, gitIdx - 1);
+  const derived =
+    `${u.origin}${collectionSegs.length ? `/${collectionSegs.map(encodeURIComponent).join("/")}` : ""}`;
+
+  // An explicit override wins, for the rare deployment whose API host differs from the
+  // browser host (a reverse proxy in front of the web UI, typically).
+  const baseUrl = (ADO_BASE_URL || derived).replace(/\/+$/, "");
+
+  const org = collectionSegs[collectionSegs.length - 1] ?? u.hostname.split(".")[0] ?? "";
+  return { baseUrl, org, project, repoId, prId };
 }
 
+/** The collection base — everything the REST paths hang off. */
 export function orgBase(ref: PrRef): string {
-  return `${ADO_BASE_URL.replace(/\/+$/, "")}/${encodeURIComponent(ref.org)}`;
+  return ref.baseUrl;
 }
 
 export function repoBase(ref: PrRef): string {
-  return `${orgBase(ref)}/${encodeURIComponent(ref.project)}/_apis/git/repositories/${encodeURIComponent(ref.repoId)}`;
+  return `${ref.baseUrl}/${encodeURIComponent(ref.project)}/_apis/git/repositories/${encodeURIComponent(ref.repoId)}`;
 }
 
 export function prBase(ref: PrRef): string {
@@ -139,9 +160,37 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
       await new Promise((r) => setTimeout(r, waitMs));
     }
   }
-  throw lastErr instanceof Error
-    ? lastErr
-    : new AdoError(`ADO 請求失敗：${String(lastErr)}`);
+  if (lastErr instanceof AdoError) throw lastErr;
+  throw new AdoError(`連線 ${u.origin} 失敗：${diagnose(lastErr)}`);
+}
+
+/**
+ * Turns a fetch-level failure into something actionable. These are almost always
+ * environmental rather than API problems, and on-prem hits every one of them.
+ */
+function diagnose(e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  const code = (e as { cause?: { code?: string } })?.cause?.code ?? (e as { code?: string })?.code ?? "";
+  const all = `${msg} ${code}`;
+
+  if (/UNABLE_TO_VERIFY_LEAF_SIGNATURE|SELF_SIGNED_CERT|DEPTH_ZERO_SELF_SIGNED|unable to verify|self-signed/i.test(all)) {
+    return (
+      `TLS 憑證無法驗證（${code || "cert"}）。內部 CA 簽發的憑證 Node 預設不信任。` +
+      `解法：export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem 後重跑`
+    );
+  }
+  if (/ERR_TLS_CERT_ALTNAME_INVALID|Hostname\/IP does not match/i.test(all)) {
+    return "TLS 憑證的主機名稱與網址不符。確認 PR URL 用的主機名與憑證上的一致";
+  }
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(all)) {
+    return "DNS 查不到這個主機。確認網址正確，且這台機器連得到內網（VPN？）";
+  }
+  if (/ECONNREFUSED/i.test(all)) return "連線被拒。確認主機與連接埠正確、服務有在跑";
+  if (/ETIMEDOUT|ECONNRESET|UND_ERR_CONNECT_TIMEOUT/i.test(all)) {
+    return "連線逾時。多半是防火牆或需要 proxy（設 HTTPS_PROXY 環境變數）";
+  }
+  if (/aborted|AbortError/i.test(all)) return `請求逾時（${ADO_TIMEOUT_MS}ms）。可調高 PRR_ADO_TIMEOUT_MS`;
+  return msg;
 }
 
 export async function adoGet<T>(url: string, opts: Omit<RequestOpts, "method" | "body"> = {}): Promise<T> {

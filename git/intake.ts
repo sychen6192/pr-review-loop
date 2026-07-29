@@ -121,7 +121,7 @@ export async function buildLocalReviewContext(opts: LocalIntakeOptions): Promise
 
   const iteration = { id: 1, sourceRefCommit: "", targetRefCommit: "", commonRefCommit: "", createdDate: "" };
   return {
-    ref: { org: "local", project: "local", repoId: opts.repo, prId: 0 },
+    ref: { baseUrl: "", org: "local", project: "local", repoId: opts.repo, prId: 0 },
     pr,
     iterations: [iteration],
     iteration,

@@ -7,6 +7,7 @@ import {
   FINDER_MODELS,
   LLM_BASE_URL,
   MAX_INLINE_COMMENTS,
+  ADO_API_VERSION,
   MIN_INLINE_SEVERITY,
   OPENCODE_AGENT,
   SKIP_STATIC,
@@ -146,12 +147,23 @@ async function main() {
     console.log("\nPR 連線測試");
     try {
       const ref = parsePrUrl(url);
-      ok("URL 解析", `${ref.org}/${ref.project}/${ref.repoId} PR !${ref.prId}`);
+      ok("URL 解析", `collection=${ref.org}｜project=${ref.project}｜repo=${ref.repoId}｜PR !${ref.prId}`);
+      // The single most useful line when an on-prem request fails: it shows exactly what
+      // the REST calls will hit, so a wrong collection or missing virtual directory is
+      // visible before anything is sent.
+      ok("API base", ref.baseUrl);
+      ok("實際請求位址", `${prBase(ref)}?api-version=${ADO_API_VERSION}`);
       try {
         const pr = await adoGet<{ title?: string; status?: string }>(prBase(ref));
         ok("讀取 PR", `「${pr.title ?? ""}」狀態 ${pr.status ?? "?"}`);
       } catch (e) {
-        bad(`讀取 PR 失敗：${e instanceof Error ? e.message : String(e)}`, "檢查 PAT scope 與 PR URL 是否正確");
+        const msg = e instanceof Error ? e.message : String(e);
+        const hint = /api-version|Unsupported|not supported/i.test(msg)
+          ? `此伺服器不支援 api-version ${ADO_API_VERSION}。on-prem 對應版本：Server 2019→5.0、2020→6.0、2022→7.0。設 PRR_ADO_API_VERSION 調整`
+          : /憑證|TLS|DNS|逾時|拒/.test(msg)
+            ? "見上方訊息中的解法"
+            : "檢查認證是否有效、以及上方「API base」是否為正確的 collection 位址";
+        bad(`讀取 PR 失敗：${msg}`, hint);
       }
     } catch (e) {
       bad(`URL 解析失敗：${e instanceof Error ? e.message : String(e)}`, "格式需為 .../{org}/{project}/_git/{repo}/pullrequest/{id}");

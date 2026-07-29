@@ -179,7 +179,7 @@ export interface AnchoredFinding extends RawFinding {
   skepticVerdicts?: number;
   skepticRefuted?: number;
   // Why this finding did not reach an inline comment, when it didn't.
-  suppressedBy?: "severity" | "cap" | "no-corroboration";
+  suppressedBy?: "severity" | "cap" | "no-corroboration" | "dismissed";
 }
 
 // --- Model runner (the interface that keeps the core free of SDK imports) ---

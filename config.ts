@@ -140,6 +140,24 @@ export const SKIP_REQUIREMENT = process.env.PRR_SKIP_REQUIREMENT === "1";
 // 1 = treat a PR with no linked work item as a failure rather than a warning.
 export const REQUIRE_WORK_ITEM = process.env.PRR_REQUIRE_WORK_ITEM === "1";
 
+// --- Noise control: exclusions and learnings (M6) ---
+// Finding categories dropped from the code axis entirely, before any model verification
+// spends tokens on them (claude-code-security-review ships the same knob as its false-
+// positive exclusion list). Counted and named in the summary, never silently discarded.
+// Applies to finder and static-tool findings; the requirement axis has its own switch
+// (PRR_SKIP_REQUIREMENT). Read lazily so tests (and late env changes) see the live value.
+export const excludedCategories = (): string[] =>
+  (process.env.PRR_EXCLUDE_CATEGORIES ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+// 0 = ignore recorded human dismissals when deciding what to publish.
+export const LEARN_FROM_DISMISSALS = process.env.PRR_LEARN_FROM_DISMISSALS !== "0";
+// Once a repo accumulates this many dismissals in one category, the summary suggests
+// excluding the category. A suggestion, never automatic: building exclusion rules from a
+// handful of dismissals would overfit (PROPOSAL §10).
+export const DISMISSAL_HINT_THRESHOLD = Number(process.env.PRR_DISMISSAL_HINT_THRESHOLD ?? 3);
+
 // --- Publishing ---
 // Hard cap on inline comments per run. Noise control beats coverage (see PROPOSAL §9.11).
 // The two axes get separate budgets on purpose: a shared cap lets code findings crowd out

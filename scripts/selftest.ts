@@ -17,6 +17,17 @@ import { filterToChangedLines } from "../gates/static";
 import { parseToolOutput } from "../profiles/parsers";
 import { selectProfiles, filesForProfile } from "../profiles";
 import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
+import { postedPositions } from "../publish/publish";
+import {
+  dismissedCategoryHints,
+  dismissedFingerprints,
+  learningsPath,
+  loadDismissals,
+  recordDismissals,
+} from "../libs/learnings";
+import { triageAndConvert } from "../gates/static";
+import type { ToolFinding } from "../profiles/types";
+import type { PrRef } from "../libs/types";
 import type { ToolSpec } from "../profiles/types";
 import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
@@ -494,7 +505,7 @@ section("consensus adjudication");
     anchor: { side: "right", startLine: 1, endLine: 1, startOffset: 1, endOffset: 5 },
     ...over,
   });
-  const empty = { merged: [], degraded: [], rawCount: 0, byFailure: {} };
+  const empty = { merged: [], degraded: [], rawCount: 0, byFailure: {}, excluded: 0 };
 
   const single = finalize(empty, [mk({ sources: ["m1"] })]);
   eq("single model, unverified -> no inline comment", single.inline.length, 0);
@@ -644,6 +655,136 @@ section("comment lifecycle");
   const d = collectDismissals(dismissed);
   eq("collects only wontFix threads", d.length, 1);
   eq("records the fingerprint", d[0]?.fingerprint, "deadbeef");
+}
+
+// --- noise control: exclusions and learnings (M6) ---
+section("excluded categories (PRR_EXCLUDE_CATEGORIES)");
+{
+  const f = mkFile("/src/app.ts", ["slowLoop();", "bug();"], [1, 2]);
+  const out = [{
+    model: "m1",
+    rejected: 0,
+    raw: "",
+    findings: [
+      mkFinding({ category: "performance", quote: "slowLoop();" }),
+      mkFinding({ category: "correctness", quote: "bug();" }),
+    ],
+  }];
+  process.env["PRR_EXCLUDE_CATEGORIES"] = "performance";
+  const c = anchorAndDedupe(out, [f]);
+  eq("excluded category dropped before anchoring", c.merged.length, 1);
+  eq("drop is counted, never silent", c.excluded, 1);
+  eq("the surviving finding is the non-excluded one", c.merged[0]?.category, "correctness");
+
+  delete process.env["PRR_EXCLUDE_CATEGORIES"];
+  const c2 = anchorAndDedupe(out, [f]);
+  eq("unset -> nothing excluded", c2.merged.length, 2);
+}
+{
+  // Tool findings obey the same exclusion: a category the config turned off is off for
+  // linters too, in the same place their category is assigned.
+  const f = mkFile("/src/a.py", ["x = eval(y)", "z = f(1)"], [1, 2]);
+  const tool = (t: string, line: number): ToolFinding =>
+    ({ tool: t, tier: "fact", ruleId: "R1", message: "m", file: "src/a.py", line, severity: "high" });
+  const staticResult = {
+    facts: [tool("bandit", 1), tool("mypy", 2)],
+    needsTriage: [],
+    suppressedCount: 0,
+    ranTools: ["bandit", "mypy"],
+    skipped: [],
+  };
+  const dummyRunner = { chat: async () => ({ text: "", model: "none" }) };
+  process.env["PRR_EXCLUDE_CATEGORIES"] = "security";
+  const res = await triageAndConvert(dummyRunner, staticResult, [f]);
+  eq("bandit (security) finding excluded", res.findings.length, 1);
+  eq("tool exclusion is counted", res.excluded, 1);
+  eq("mypy (correctness) finding kept", res.findings[0]?.category, "correctness");
+  delete process.env["PRR_EXCLUDE_CATEGORIES"];
+}
+
+section("dismissal suppression (learnings)");
+{
+  const mk = (over: Partial<AnchoredFinding>): AnchoredFinding => ({
+    category: "correctness",
+    severity: "high",
+    confidence: 0.8,
+    file: "/a.ts",
+    quote: "x();",
+    claim: "c",
+    sources: ["m1", "m2"],
+    fingerprint: "fp1",
+    anchor: { side: "right", startLine: 1, endLine: 1, startOffset: 1, endOffset: 5 },
+    ...over,
+  });
+  const empty = { merged: [], degraded: [], rawCount: 0, byFailure: {}, excluded: 0 };
+
+  // Corroboration cannot re-open what a reviewer closed: two models + a passed skeptic
+  // round would normally guarantee an inline comment.
+  const res = finalize(empty, [mk({ skepticVerdicts: 1 })], new Set(["fp1"]));
+  eq("dismissed finding never goes inline", res.inline.length, 0);
+  eq("still visible in the summary", res.belowBar.length, 1);
+  eq("with its suppression reason", res.belowBar[0]?.suppressedBy, "dismissed");
+  eq("counted in stats", res.stats.dismissed, 1);
+
+  const other = finalize(empty, [mk({})], new Set(["unrelated"]));
+  eq("non-matching fingerprint unaffected", other.inline.length, 1);
+}
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "prloop-learnings-"));
+  const ref: PrRef = { baseUrl: "https://dev.azure.com/o", org: "o", project: "p", repoId: "r", prId: 7 };
+  const rec = { fingerprint: "abc123", file: "/a.ts", claim: "c", category: "performance", resolvedAs: "wontFix" };
+
+  eq("missing store -> empty", loadDismissals(ref, root).length, 0);
+  eq("first dismissal recorded", recordDismissals(ref, [rec], root), 1);
+  eq("same fingerprint never recorded twice", recordDismissals(ref, [rec], root), 0);
+  recordDismissals(ref, [{ ...rec, fingerprint: "def456" }], root);
+
+  const all = loadDismissals(ref, root);
+  eq("both records load", all.map((d) => d.fingerprint).sort(), ["abc123", "def456"]);
+  eq("the PR that dismissed it is stamped", all[0]?.prId, 7);
+  check("fingerprint set matches", dismissedFingerprints(ref, root).has("abc123"));
+
+  // A corrupt line loses one record, never the store.
+  fs.appendFileSync(learningsPath(ref, root), "not json at all\n");
+  eq("corrupt line skipped on load", loadDismissals(ref, root).length, 2);
+
+  fs.rmSync(root, { recursive: true, force: true });
+}
+{
+  const mkD = (category: string | undefined, i: number) =>
+    ({ fingerprint: `f${i}`, file: "/a", claim: "", category, resolvedAs: "wontFix", prId: 1, recordedAt: "" });
+  const stored = [mkD("performance", 1), mkD("performance", 2), mkD("performance", 3), mkD("security", 4)];
+  const hints = dismissedCategoryHints(stored, [], 3);
+  eq("category at the threshold is hinted", hints.map((h) => h.category), ["performance"]);
+  eq("hint carries the count", hints[0]?.count, 3);
+  eq("already-excluded categories are not re-hinted", dismissedCategoryHints(stored, ["performance"], 3).length, 0);
+  eq("legacy records without a category never hint", dismissedCategoryHints([mkD(undefined, 9)], [], 1).length, 0);
+}
+{
+  const t = {
+    id: 3,
+    status: "byDesign",
+    comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=beef12 --><!-- prloop:cat=performance -->slow loop" }],
+    threadContext: { filePath: "/a.ts" },
+  };
+  eq("category parsed from the comment marker", collectDismissals([t])[0]?.category, "performance");
+  const legacy = { ...t, comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=beef12 -->slow loop" }] };
+  eq("legacy comment without marker -> no category", collectDismissals([legacy])[0]?.category, undefined);
+}
+
+section("position dedupe covers dismissed threads");
+{
+  const mkT = (status: string, content = "<!-- prloop -->issue") => ({
+    id: 1,
+    status,
+    comments: [{ id: 1, content }],
+    threadContext: { filePath: "/src/a.ts", rightFileStart: { line: 3, offset: 1 }, rightFileEnd: { line: 3, offset: 5 } },
+  });
+  eq("active thread occupies its lines", postedPositions([mkT("active")]).length, 1);
+  eq("wontFix thread still occupies its lines", postedPositions([mkT("wontFix")]).length, 1);
+  eq("byDesign thread still occupies its lines", postedPositions([mkT("byDesign")]).length, 1);
+  eq("fixed thread frees its lines (code changed)", postedPositions([mkT("fixed")]).length, 0);
+  eq("someone else's thread never counts", postedPositions([mkT("active", "a teammate's comment")]).length, 0);
 }
 
 // --- realistic seeded PR ---

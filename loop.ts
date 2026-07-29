@@ -5,10 +5,12 @@
 // 1 = fatal (auth, network, bad arguments).
 import {
   FINDER_MODELS,
+  FINDING_CATEGORIES,
   LLM_BASE_URL,
   MIN_CONSENSUS_SOURCES,
   REQUIRE_CORROBORATION,
   SKEPTIC_MODELS,
+  excludedCategories,
   isDryRun,
 } from "./config";
 import { parsePrUrl } from "./ado/client";
@@ -66,6 +68,22 @@ async function main() {
         "can NEVER become inline comments. Add a second finder or set PRR_SKEPTIC_MODELS " +
         "(or loosen with PRR_REQUIRE_CORROBORATION=0)",
     );
+  }
+  const excluded = excludedCategories();
+  if (excluded.length > 0) {
+    // A typo here would silently exclude nothing, so unknown names are called out.
+    const known = new Set<string>(FINDING_CATEGORIES);
+    const unknown = excluded.filter((c) => !known.has(c));
+    if (unknown.length > 0) {
+      log(
+        `[WARN] PRR_EXCLUDE_CATEGORIES contains unknown categories (${unknown.join(", ")}) — ` +
+          `they exclude nothing. Valid: ${FINDING_CATEGORIES.join(", ")}`,
+      );
+    }
+    if (excluded.includes("req-mismatch")) {
+      log("[WARN] req-mismatch is produced by the requirement axis; use PRR_SKIP_REQUIREMENT=1 to turn that off");
+    }
+    log(`Excluded categories: ${excluded.join(", ")}`);
   }
   if (sinceAuto) {
     const last = await resolveLastReviewedIteration(ref);

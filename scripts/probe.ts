@@ -316,8 +316,8 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
     fs.writeFileSync(target, authorities.map(derToPem).join(""));
     console.log(`  Wrote the issuing authorities to: ${target} (${authorities.length} certs)`);
     console.log("");
-    console.log("  Next:");
-    console.log(`     export NODE_EXTRA_CA_CERTS=${target}`);
+    console.log("  Next — put it in .env (applies to every prloop entry point):");
+    console.log(`     PRR_CA_CERTS=${target}`);
     console.log("");
     console.log("  ⚠️ These came off this connection; for real use, get the corporate root CA from IT.");
     console.log("");
@@ -339,15 +339,15 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
     console.log("  → Signed by a CA Node does not trust. The last issuer in the chain above is the CA intercepting you.");
     console.log("     If it is not a public CA (Microsoft / DigiCert etc.), your company runs TLS interception.");
     console.log("");
-    console.log("  Fix: point Node at that CA's cert file (Node ignores the OS trust store)");
-    console.log("     export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem");
+    console.log("  Fix: point prloop at that CA's cert file (Node ignores the OS trust store)");
+    console.log("     .env:  PRR_CA_CERTS=/path/to/corporate-ca.pem");
     console.log("");
     console.log("  Alternatives:");
     console.log(`     • Use the system trust store (your Node is v${process.versions.node}):`);
     console.log(`       ${systemCaAdvice()}`);
     for (const candidate of ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"]) {
       if (fs.existsSync(candidate)) {
-        console.log(`     • System CA bundle exists, try: export NODE_EXTRA_CA_CERTS=${candidate}`);
+        console.log(`     • System CA bundle exists, try: PRR_CA_CERTS=${candidate}`);
       }
     }
     console.log("     • Ask IT for the corporate root CA as .pem / .crt");
@@ -359,7 +359,7 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
     console.log("");
     console.log(`  Confirmation only, never keep it: NODE_TLS_REJECT_UNAUTHORIZED=0 npx tsx scripts/probe.ts '<PR URL>'`);
     console.log("     If that works, it is definitely the certificate. But it disables all cert");
-    console.log("     verification -- any man-in-the-middle is accepted. Switch to NODE_EXTRA_CA_CERTS right after.");
+    console.log("     verification -- any man-in-the-middle is accepted. Switch to PRR_CA_CERTS right after.");
   }
 }
 

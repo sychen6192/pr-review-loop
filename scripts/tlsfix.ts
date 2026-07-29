@@ -40,11 +40,12 @@ function gatherCandidates(): Candidate[] {
     out.push({
       name: `${label}: ${file}`,
       caFile: file,
-      exportLine: `export NODE_EXTRA_CA_CERTS=${file}`,
+      exportLine: `PRR_CA_CERTS=${file}`,
     });
   };
 
   for (const [env, label] of [
+    ["PRR_CA_CERTS", "Configured in .env"],
     ["REQUESTS_CA_BUNDLE", "CA bundle used by Python/az"],
     ["SSL_CERT_FILE", "SSL_CERT_FILE"],
     ["CURL_CA_BUNDLE", "CA bundle used by curl"],
@@ -238,18 +239,16 @@ async function main() {
       console.log("");
       if (result === "OK") {
         console.log("=".repeat(70));
-        console.log("✅ Works. Use this file:");
+        console.log("✅ Works. Put this in .env:");
         console.log("");
-        console.log(`     export NODE_EXTRA_CA_CERTS=${chain}`);
-        console.log("");
-        console.log("  Add it to ~/.bashrc to make it permanent.");
+        console.log(`     PRR_CA_CERTS=${chain}`);
         process.exit(0);
       }
       console.log(`  Still failing with the downloaded certificate: ${result}`);
     }
     console.log("");
     console.log("Ask IT for the intermediate CA that signed the proxy certificate, save it as .pem, then:");
-    console.log("     export NODE_EXTRA_CA_CERTS=/path/to/that-file.pem");
+    console.log("     .env:  PRR_CA_CERTS=/path/to/that-file.pem");
     console.log("");
     console.log("Or export it from a browser: open the site → click the padlock → certificate →");
     console.log("certification path → pick the middle one → export as Base64/PEM.");

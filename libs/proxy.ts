@@ -6,8 +6,9 @@
 // failure to diagnose from the outside.
 //
 // So we read the standard variables ourselves and hand fetch an explicit dispatcher.
-import { ProxyAgent, type Dispatcher } from "undici";
+import { Agent, ProxyAgent, setGlobalDispatcher, type Dispatcher } from "undici";
 import { logVerbose } from "./log";
+import { caBundle, caSummary } from "./tls";
 
 /**
  * User-Agent sent on both ordinary requests and the proxy CONNECT.
@@ -60,9 +61,24 @@ export function bypassesProxy(host: string, noProxy: string = NO_PROXY): boolean
   return false;
 }
 
+const CA = caBundle();
+
+/**
+ * Dispatcher for unproxied connections. Exists only to carry the extra CA; when none is
+ * configured this stays undefined and fetch keeps its own default.
+ *
+ * It is also installed globally, so a `fetch()` that forgets to pass a dispatcher still
+ * gets the corporate CA rather than failing with an unexplained UNABLE_TO_VERIFY_LEAF_SIGNATURE.
+ */
+const directAgent: Dispatcher | undefined = CA ? new Agent({ connect: { ca: CA } }) : undefined;
+if (directAgent) {
+  setGlobalDispatcher(directAgent);
+  logVerbose(`Extra CA trust: ${caSummary()}`);
+}
+
 const cache = new Map<string, Dispatcher | undefined>();
 
-/** The dispatcher fetch should use for a URL, or undefined to connect directly. */
+/** The dispatcher fetch should use for a URL. */
 export function dispatcherFor(url: string): Dispatcher | undefined {
   let host: string;
   let isHttps: boolean;
@@ -71,25 +87,37 @@ export function dispatcherFor(url: string): Dispatcher | undefined {
     host = u.hostname;
     isHttps = u.protocol === "https:";
   } catch {
-    return undefined;
+    return directAgent;
   }
-  if (bypassesProxy(host)) return undefined;
+  // Bypassing the proxy still needs the CA: an internal endpoint reached directly is
+  // exactly the kind of host whose certificate the corporate root signed.
+  if (bypassesProxy(host)) return directAgent;
 
   const proxy = isHttps ? HTTPS_PROXY || HTTP_PROXY : HTTP_PROXY || HTTPS_PROXY;
-  if (!proxy) return undefined;
+  if (!proxy) return directAgent;
 
   if (!cache.has(proxy)) {
     try {
-      // Headers here ride on the CONNECT request itself, which is where the filtering
-      // happens — setting a User-Agent only on the tunnelled request would be too late.
-      cache.set(proxy, new ProxyAgent({ uri: proxy, headers: { "user-agent": USER_AGENT } }));
+      cache.set(
+        proxy,
+        new ProxyAgent({
+          uri: proxy,
+          // Headers here ride on the CONNECT request itself, which is where the filtering
+          // happens — setting a User-Agent only on the tunnelled request would be too late.
+          headers: { "user-agent": USER_AGENT },
+          // requestTls is the tunnelled connection to the origin — the one a TLS-intercepting
+          // proxy re-signs, so this is where the corporate CA is actually needed. proxyTls
+          // only matters for an https:// proxy URL, which is rare but costs nothing to cover.
+          ...(CA ? { requestTls: { ca: CA }, proxyTls: { ca: CA } } : {}),
+        }),
+      );
       logVerbose(`Using proxy: ${redactProxy(proxy)}`);
     } catch (e) {
       logVerbose(`Unparsable proxy config (${proxy}): ${e instanceof Error ? e.message : String(e)}`);
       cache.set(proxy, undefined);
     }
   }
-  return cache.get(proxy);
+  return cache.get(proxy) ?? directAgent;
 }
 
 /**

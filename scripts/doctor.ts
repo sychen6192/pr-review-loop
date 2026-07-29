@@ -8,7 +8,6 @@ import {
   LLM_BASE_URL,
   MAX_INLINE_COMMENTS,
   ADO_API_VERSION,
-  CA_CERTS,
   MIN_INLINE_SEVERITY,
   OPENCODE_AGENT,
   SKIP_STATIC,
@@ -22,6 +21,7 @@ import {
 } from "../config";
 import { adoGet, parsePrUrl, prBase } from "../ado/client";
 import { describeAuthMode } from "../ado/auth";
+import { CA_SOURCES, caSummary } from "../libs/tls";
 import { existsSync } from "node:fs";
 import { commandExists, run } from "../libs/shell";
 import { proxySummary } from "../libs/proxy";
@@ -54,15 +54,20 @@ async function main() {
   const major = Number(process.versions.node.split(".")[0]);
   if (major >= 20) ok("Node.js", `v${process.versions.node}`);
   else bad(`Node.js v${process.versions.node} too old`, "needs v20+ (this tool uses built-in fetch)");
-  if (CA_CERTS && !process.env["NODE_EXTRA_CA_CERTS"]) {
-    warn(
-      `PRR_CA_CERTS is set (${CA_CERTS}) but NODE_EXTRA_CA_CERTS is not`,
-      "Run via ./bin/prloop, which exports it before Node starts. A direct `npx tsx` run " +
-        "cannot apply it — the variable is read at process start.",
+  // Report what actually got loaded, not what was merely configured: a path that is
+  // misspelled or in DER form is the failure mode that looks identical to no CA at all.
+  const broken = CA_SOURCES.filter((s) => s.error);
+  const good = CA_SOURCES.filter((s) => !s.error);
+  for (const s of broken) {
+    bad(
+      `CA certificate unusable: ${s.path} (${s.from})`,
+      s.error?.includes("DER")
+        ? "Convert it: openssl x509 -inform der -in <file> -out <file>.pem"
+        : `Check the path is readable. ${s.error ?? ""}`,
     );
   }
-  if (process.env["NODE_EXTRA_CA_CERTS"]) {
-    ok("Extra CA certificates", process.env["NODE_EXTRA_CA_CERTS"]);
+  if (good.length > 0) {
+    ok("Extra CA certificates", `${caSummary()} — applied to every request`);
   } else if ((process.env["NODE_OPTIONS"] ?? "").includes("use-system-ca")) {
     ok("Certificate source", "system trust store (--use-system-ca)");
   }

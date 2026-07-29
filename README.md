@@ -337,7 +337,7 @@ probe flags this.
 
   ```bash
   npx tsx scripts/probe.ts '<PR URL>' --export-ca ./corporate-ca.pem
-  # then put the path in .env as PRR_CA_CERTS, and run via ./bin/prloop
+  # then put the path in .env as PRR_CA_CERTS
   ```
 
   On verification failure, probe writes the chain the server actually presented as PEM, saving a
@@ -365,8 +365,8 @@ probe flags this.
   **Full fix for a real case** (corporate TLS interception environment): the appliance presented only the
   re-signed site certificate — the intermediate was neither in the handshake nor in the system CA bundle.
   Export that intermediate from the browser: open the site → padlock in the address bar → Certificate →
-  Certification Path → pick **the middle one** → export as Base64/PEM, then
-  `export NODE_EXTRA_CA_CERTS=/path/to/exported.pem`.
+  Certification Path → pick **the middle one** → export as Base64/PEM, then set
+  `PRR_CA_CERTS=/path/to/exported.pem` in `.env`.
   `tlsfix` detects automatically whether this is your case.
 
   **If `az` / `curl` / `git` all work on the same machine and only this tool doesn't**, the cause is
@@ -375,12 +375,14 @@ probe flags this.
   file:
 
   ```bash
-  export NODE_EXTRA_CA_CERTS="$REQUESTS_CA_BUNDLE"   # usually /etc/ssl/certs/ca-certificates.crt
+  # .env
+  PRR_CA_CERTS=/etc/ssl/certs/ca-certificates.crt   # whatever $REQUESTS_CA_BUNDLE points at
   ```
 
-  `bin/prloop` does this automatically at startup (`NODE_EXTRA_CA_CERTS` must be set before node starts;
-  the program can't change it from inside), so the wrapper needs no manual setup. Running `npx tsx`
-  directly does.
+  `PRR_CA_CERTS` accepts a comma-separated list (a root and its intermediate often arrive as separate
+  files) and is attached to the HTTP dispatcher at runtime, so it applies to every entry point —
+  `bin/prloop`, `npm run doctor`, a direct `npx tsx`, all of them. `NODE_EXTRA_CA_CERTS` is still
+  honoured if you prefer it, but it only works when something exported it before node started.
 
   Check whether your corporate CA is in that file:
   ```bash
@@ -390,7 +392,7 @@ probe flags this.
 
   To confirm the cause you can temporarily set `NODE_TLS_REJECT_UNAUTHORIZED=0`, but **don't leave it** —
   it disables all certificate verification, which means accepting any man-in-the-middle. Switch back to
-  `NODE_EXTRA_CA_CERTS` as soon as you've confirmed.
+  `PRR_CA_CERTS` as soon as you've confirmed.
 - **203 / login page error.** PAT invalid or missing scope (needs Code Read & Write). On az CLI, usually
   an expired `az login` or the wrong tenant — rerun `az login`.
 - **az errors.** `doctor` shows the current auth mode and az login identity. To force one auth method,

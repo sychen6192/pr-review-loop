@@ -20,6 +20,13 @@ import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMa
 import type { ToolSpec } from "../profiles/types";
 import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
+import { load, sourcePaths } from "../libs/tls";
+import { PRLOOP_ROOT } from "../config";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 
 let passed = 0;
 let failed = 0;
@@ -721,6 +728,68 @@ section("proxy display redaction");
   eq("password redacted", redactProxy("http://user:secret@p.corp:80"), "http://user:***@p.corp:80");
   eq("username-only is redacted too", redactProxy("http://tok@p.corp:3128"), "http://tok:***@p.corp:3128");
   check("raw password never appears", !redactProxy("http://u:hunter2@p.corp").includes("hunter2"));
+}
+
+section("extra CA trust");
+{
+  const LEAF = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prloop-ca-"));
+  const one = path.join(dir, "one.pem");
+  const two = path.join(dir, "two.pem");
+  const der = path.join(dir, "raw.cer");
+  fs.writeFileSync(one, LEAF);
+  fs.writeFileSync(two, LEAF + LEAF);
+  fs.writeFileSync(der, Buffer.from([0x30, 0x82, 0x01, 0x0a]));
+
+  eq("comma-separated paths are split", sourcePaths(`${one},${two}`, "").length, 2);
+  eq("duplicate path appears once", sourcePaths(one, one).length, 1);
+  eq("NODE_EXTRA_CA_CERTS is also honoured", sourcePaths("", one)[0]?.from, "NODE_EXTRA_CA_CERTS");
+  eq("empty config -> no sources", sourcePaths("", "").length, 0);
+
+  // A bundle holds many certs; loading only the first would trust the wrong half of a chain.
+  eq("every PEM block in a bundle is loaded", load([{ path: two, from: "PRR_CA_CERTS" }]).pems.length, 2);
+  eq("two files combine", load(sourcePaths(`${one},${two}`, "")).pems.length, 3);
+
+  // A DER export and a typo'd path both look exactly like "no CA configured" at the socket,
+  // so they have to surface as errors rather than being silently skipped.
+  const derLoad = load([{ path: der, from: "PRR_CA_CERTS" }]);
+  eq("DER file yields no certs", derLoad.pems.length, 0);
+  check("DER file is reported as an error", (derLoad.sources[0]?.error ?? "").includes("DER"));
+  check("missing file is reported", load([{ path: path.join(dir, "nope.pem"), from: "PRR_CA_CERTS" }]).sources[0]?.error !== undefined);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+section("dispatcher carries the CA on every path");
+{
+  // The regression this guards: PRR_CA_CERTS used to be applied only by exporting
+  // NODE_EXTRA_CA_CERTS from bin/prloop, so it did nothing under `npm run doctor` — and even
+  // there, dispatcherFor() returned undefined when no proxy was set, dropping the CA anyway.
+  // Needs a fresh process, because the trust store is read once at module load.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prloop-disp-"));
+  const pem = path.join(dir, "ca.pem");
+  fs.writeFileSync(pem, "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n");
+  const probe = path.join(dir, "probe.ts");
+  const proxyMod = pathToFileURL(path.join(PRLOOP_ROOT, "libs/proxy.ts")).href;
+  fs.writeFileSync(
+    probe,
+    `import { dispatcherFor } from ${JSON.stringify(proxyMod)};\n` +
+      `console.log(JSON.stringify({\n` +
+      `  direct: dispatcherFor("https://dev.azure.com/x") !== undefined,\n` +
+      `  bypassed: dispatcherFor("http://localhost:4000/v1") !== undefined,\n` +
+      `}));\n`,
+  );
+  const res = spawnSync("npx", ["tsx", probe], {
+    encoding: "utf8",
+    env: { ...process.env, PRR_CA_CERTS: pem, PRR_HTTPS_PROXY: "", PRR_NO_PROXY: "localhost", HTTPS_PROXY: "", https_proxy: "", PRR_QUIET: "1" },
+  });
+  const out = parseJsonObject<{ direct?: boolean; bypassed?: boolean }>(res.stdout);
+  check("probe process ran", out.ok, res.stderr.slice(0, 400));
+  if (out.ok) {
+    check("CA is applied with no proxy configured", out.value.direct === true);
+    check("CA is applied to NO_PROXY hosts too", out.value.bypassed === true);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\nResult: ${passed} passed, ${failed} failed`);

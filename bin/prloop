@@ -3,8 +3,10 @@
 set -euo pipefail
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# NODE_EXTRA_CA_CERTS is read once at process start, so it cannot be applied from inside the
-# program — it has to be exported here. Precedence:
+# prloop applies PRR_CA_CERTS itself (libs/tls.ts attaches it to the HTTP dispatcher), so
+# this block is not what makes the tool's own requests work. It exists for the child
+# processes — opencode, az, git — which have their own HTTP stacks and only read the
+# environment. Precedence:
 #   1. NODE_EXTRA_CA_CERTS already in the environment
 #   2. PRR_CA_CERTS from .env (the place to put a corporate CA)
 #   3. whatever bundle the rest of the toolchain already trusts. Node ships its own CA list

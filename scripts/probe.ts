@@ -468,6 +468,17 @@ async function main() {
 
   await probeViaAz(`${prBase(ref)}?api-version=${ADO_API_VERSION}`);
 
+  // curl uses the system trust store and honours the proxy variables, so reproducing the
+  // same request with it isolates Node from everything else in one step.
+  console.log("\n=== 8. 用 curl 重現同一個請求（隔離 Node）===");
+  console.log("  複製這行執行；它用系統 CA 與 HTTPS_PROXY，與 Node 的信任來源無關：");
+  console.log("");
+  console.log(`    curl -sS -u ":$PRR_ADO_PAT" \\`);
+  console.log(`      "${prBase(ref)}?api-version=${ADO_API_VERSION}" | head -c 300`);
+  console.log("");
+  console.log("  回 JSON = PAT 有效且網路可達 → 問題在 Node（憑證或 proxy）");
+  console.log("  回 HTML = PAT 無效或 scope 不足（ADO 用 203 + 登入頁代替 401）");
+
   console.log("\n=== 結論 ===");
   if (working.length > 0) {
     console.log(`  這台伺服器接受：${working.join("、")}`);

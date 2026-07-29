@@ -11,6 +11,9 @@
 // once on a parse failure — but a weak model will still comply less reliably here than on
 // the openai path. Prefer the openai runner when the endpoint supports guided decoding.
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { explainSpawnError, planSpawn } from "../libs/shell";
 import {
   AGENT_TIMEOUT_MS,
@@ -73,28 +76,72 @@ ${JSON.stringify(req.schema, null, 2)}
 \`\`\``;
 }
 
+/**
+ * Decides how the prompt reaches opencode.
+ *
+ * Passing it as a positional argument is simplest and is what every POSIX run does. On
+ * Windows it is impossible: CreateProcess caps the command line at 32767 characters and a
+ * .cmd shim routed through cmd.exe at 8191, while a review prompt carrying a diff runs to
+ * six figures. `opencode run -f <file>` attaches file content to the message, which is the
+ * documented way to hand it more text than an argument can hold.
+ *
+ * The file route is used only when the inline one would not fit, so the common path stays
+ * unchanged and this cannot regress a working setup.
+ */
+export function buildInvocation(
+  model: string,
+  prompt: string,
+  opts: { jsonEvents: boolean; agent: string; platform?: string; writeFile?: (text: string) => string },
+): { args: string[]; promptFile?: string; note?: string } {
+  const base = ["run", "--agent", opts.agent];
+  if (model) base.push("--model", model);
+  if (opts.jsonEvents) base.push("--format", "json");
+
+  const inline = [...base, prompt];
+  const plan = planSpawn(OPENCODE_BIN, inline, opts.platform);
+  if (!plan.error || !opts.writeFile) return { args: inline };
+
+  const promptFile = opts.writeFile(prompt);
+  return {
+    args: [
+      ...base,
+      "--file",
+      promptFile,
+      // The positional message still has to say what to do with the attachment; opencode
+      // attaches file content but the instruction lives in the message.
+      "Follow the instructions in the attached file exactly. Output only what it specifies, with no other text.",
+    ],
+    promptFile,
+    note: `prompt (${prompt.length} chars) passed via --file: ${plan.error}`,
+  };
+}
+
 function runOnce(label: string, model: string, prompt: string): Promise<ChatResponse> {
   return new Promise((resolve) => {
     log(`[${label}] opencode session started (model=${model || "(agent default)"})`);
     const stopHeartbeat = startHeartbeat(`[${label}]`);
     const started = Date.now();
 
-    const args = ["run", "--agent", OPENCODE_AGENT];
-    if (model) args.push("--model", model);
-    if (OPENCODE_JSON_EVENTS) args.push("--format", "json");
-    args.push(prompt); // positional, last
+    let tmpDir: string | undefined;
+    const invocation = buildInvocation(model, prompt, {
+      jsonEvents: OPENCODE_JSON_EVENTS,
+      agent: OPENCODE_AGENT,
+      writeFile: (text) => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prloop-oc-"));
+        const file = path.join(tmpDir, "prompt.md");
+        fs.writeFileSync(file, text, "utf8");
+        return file;
+      },
+    });
+    if (invocation.note) logVerbose(`[${label}] ${invocation.note}`);
 
-    // Windows needs the command resolved through PATHEXT and .cmd shims routed via cmd.exe;
-    // it also caps the command line, which a review prompt carrying a diff blows past by an
-    // order of magnitude. Catching that here turns an unexplained errno into the actual fact.
-    const plan = planSpawn(OPENCODE_BIN, args);
+    // Windows also needs the command resolved through PATHEXT, and .cmd shims routed via
+    // cmd.exe — Node refuses to spawn them directly since the CVE-2024-27980 fix.
+    const plan = planSpawn(OPENCODE_BIN, invocation.args);
     if (plan.error) {
-      const msg =
-        `${plan.error}. The review prompt is ${prompt.length} chars, which cannot be passed as ` +
-        `a command-line argument on Windows. Lower PRR_MAX_DIFF_CHARS, or run prloop under WSL`;
-      log(`[${label}] [FAIL] ${msg}`);
+      log(`[${label}] [FAIL] ${plan.error}`);
       stopHeartbeat();
-      resolve({ text: "", model, error: msg });
+      resolve({ text: "", model, error: plan.error });
       return;
     }
 
@@ -139,6 +186,7 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
       clearTimeout(timer);
       if (killEscalation) clearTimeout(killEscalation);
       stopHeartbeat();
+      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
       if (stdoutBuf.trim()) traceEvent(stdoutBuf, `[${label}]`, acc); // flush partial line
 
       const secs = Math.round((Date.now() - started) / 1000);

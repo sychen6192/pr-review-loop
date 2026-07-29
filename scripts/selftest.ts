@@ -24,6 +24,7 @@ import { load, sourcePaths } from "../libs/tls";
 import { Semaphore } from "../libs/limit";
 import { describeBadCompletion, isTransientModelError } from "../models/runner";
 import { explainSpawnError, planSpawn } from "../libs/shell";
+import { buildInvocation } from "../models/opencode";
 import { anchorAndDedupe } from "../gates/aggregate";
 import type { FinderOutput } from "../gates/finder";
 import { FINDINGS_SCHEMA, REQUIREMENT_SCHEMA, TRIAGE_SCHEMA, VERDICT_SCHEMA } from "../models/schemas";
@@ -984,6 +985,36 @@ section("Windows process spawning");
   check("ENAMETOOLONG names the length", ex("ENAMETOOLONG").includes("too long"));
   check("EACCES names permissions", ex("EACCES").includes("executable"));
   check("unknown code still reports something", ex("EWEIRD").includes("failed to start"));
+}
+
+section("opencode invocation: prompt delivery");
+{
+  const opts = { jsonEvents: true, agent: "prloop-reviewer" };
+  const small = buildInvocation("m", "short prompt", { ...opts, platform: "linux", writeFile: () => "/tmp/x.md" });
+  eq("a prompt that fits stays positional", small.args[small.args.length - 1], "short prompt");
+  check("no temp file for the common path", small.promptFile === undefined);
+
+  // Windows cannot carry a review prompt on the command line at any size that matters.
+  let written = "";
+  const big = buildInvocation("m", "x".repeat(60_000), {
+    ...opts,
+    platform: "win32",
+    writeFile: (t) => { written = t; return "C:\\tmp\\prompt.md"; },
+  });
+  check("oversized prompt switches to --file", big.args.includes("--file"));
+  eq("...pointing at the written file", big.promptFile, "C:\\tmp\\prompt.md");
+  eq("...with the whole prompt in it", written.length, 60_000);
+  check("...and a message telling the agent to use it", (big.args[big.args.length - 1] ?? "").includes("attached file"));
+  check("...the prompt itself is no longer an argument", !big.args.some((a) => a.length > 1000));
+  check("...and it says why in the note", (big.note ?? "").includes("--file"));
+
+  // Without a writer available there is nothing to fall back to; stay inline rather than
+  // silently dropping the prompt.
+  const noWriter = buildInvocation("m", "x".repeat(60_000), { ...opts, platform: "win32" });
+  check("no writer -> unchanged inline args", noWriter.args.some((a) => a.length === 60_000));
+
+  eq("agent flag is always present", small.args[1], "--agent");
+  check("json format requested when configured", small.args.includes("--format") && small.args.includes("json"));
 }
 
 section("unusable completions are named, not left to the JSON parser");

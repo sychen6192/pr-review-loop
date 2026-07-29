@@ -3,7 +3,7 @@
 // is made by code here (design principle: the loop never hands control to a model).
 import { SKIP_REQUIREMENT, SKIP_STATIC } from "./config";
 import { buildReviewContext, type ReviewContext } from "./ado/intake";
-import { anchorAndDedupe, finalize, type AggregateResult } from "./gates/aggregate";
+import { anchorAndDedupe, finalize, mergeToolFindings, type AggregateResult } from "./gates/aggregate";
 import { runFinders } from "./gates/finder";
 import { runRequirementGate, toRequirementFindings } from "./gates/requirement";
 import { applyVerdicts, runSkeptic } from "./gates/skeptic";
@@ -139,7 +139,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   const toolOut = await triageAndConvert(opts.runner, staticResult, ctx.files);
   run.saveJson("static-findings.json", toolOut);
 
-  const agg = finalize(candidates, [...survivors, ...toolOut.findings]);
+  const agg = finalize(candidates, mergeToolFindings(survivors, toolOut.findings));
   const reqFindings = toRequirementFindings(req, ctx.files);
   // Attach the tracking id ADO needs for each thread to survive future pushes.
   for (const f of [...agg.inline, ...reqFindings]) {

@@ -3,7 +3,14 @@
 //
 // Exit codes: 0 = reviewed, no high-risk findings; 2 = high-risk findings posted;
 // 1 = fatal (auth, network, bad arguments).
-import { FINDER_MODELS, LLM_BASE_URL, isDryRun } from "./config";
+import {
+  FINDER_MODELS,
+  LLM_BASE_URL,
+  MIN_CONSENSUS_SOURCES,
+  REQUIRE_CORROBORATION,
+  SKEPTIC_MODELS,
+  isDryRun,
+} from "./config";
 import { parsePrUrl } from "./ado/client";
 import { unmetCriteria } from "./gates/requirement";
 import { resolveLastReviewedIteration } from "./publish/lifecycle";
@@ -51,6 +58,13 @@ async function main() {
   banner(`prloop: ${ref.org}/${ref.project}/${ref.repoId} PR !${ref.prId}`);
   log(`Models: ${FINDER_MODELS.join(", ")} @ ${LLM_BASE_URL}`);
   if (isDryRun()) log("DRY RUN: no comments will be posted");
+  if (REQUIRE_CORROBORATION && FINDER_MODELS.length < MIN_CONSENSUS_SOURCES && SKEPTIC_MODELS.length === 0) {
+    log(
+      "[WARN] corroboration gate is unsatisfiable: one finder, no skeptics — model findings " +
+        "can NEVER become inline comments. Add a second finder or set PRR_SKEPTIC_MODELS " +
+        "(or loosen with PRR_REQUIRE_CORROBORATION=0)",
+    );
+  }
   if (sinceAuto) {
     const last = await resolveLastReviewedIteration(ref);
     if (last === undefined) log("--since auto: no prior review found, doing a full review");

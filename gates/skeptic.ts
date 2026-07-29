@@ -44,6 +44,12 @@ export function parseVerdict(raw: string, model: string): Verdict {
     return { refuted: false, reason: "", confidence: 0, model, error: parsed.error };
   }
   const o = parsed.value;
+  // A parseable object that never says refuted true/false is not a verdict. Counting it as
+  // an answer would let garbage output both survive the kill vote AND satisfy the
+  // "cleared by a skeptic" corroboration gate downstream.
+  if (typeof o["refuted"] !== "boolean") {
+    return { refuted: false, reason: "", confidence: 0, model, error: "no refuted field in verdict" };
+  }
   const sev = typeof o["suggested_severity"] === "string" ? o["suggested_severity"].toLowerCase() : "";
   let confidence = Number(o["confidence"]);
   if (!Number.isFinite(confidence)) confidence = 0.5;
@@ -67,6 +73,7 @@ async function verifyOne(
     category: finding.category,
     severity: finding.severity,
     file,
+    side: finding.anchor!.side,
     startLine: finding.anchor!.startLine,
     endLine: finding.anchor!.endLine,
     contextLines: SKEPTIC_CONTEXT_LINES,
@@ -141,7 +148,9 @@ export function applyVerdicts(outcomes: SkepticOutcome[]): AnchoredFinding[] {
     if (o.killed) continue;
     const f = o.finding;
     const answered = o.verdicts.filter((v) => !v.error);
-    f.skepticVerdicts = answered.length;
+    // "Cleared" = examined and NOT refuted. A refuting minority vote kept the finding
+    // alive (fail-open), but it must not double as the corroboration that publishes it.
+    f.skepticVerdicts = answered.filter((v) => !v.refuted).length;
     f.skepticRefuted = answered.filter((v) => v.refuted).length;
 
     const downgrades = answered

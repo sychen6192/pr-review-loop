@@ -16,7 +16,13 @@ export const FINDINGS_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["category", "severity", "confidence", "file", "quote", "claim"],
+        // Strict-mode json_schema (OpenAI, and LiteLLM in front of it) requires `required`
+        // to list EVERY key in properties; optionality is expressed as a nullable type.
+        // A schema that violates this is a hard HTTP 400 from those backends.
+        required: [
+          "category", "severity", "confidence", "file", "quote", "context_before",
+          "context_after", "side", "claim", "evidence", "suggested_fix", "boundary_owner",
+        ],
         properties: {
           category: { type: "string", enum: [...FINDING_CATEGORIES] },
           severity: { type: "string", enum: [...SEVERITIES] },
@@ -26,12 +32,12 @@ export const FINDINGS_SCHEMA = {
             type: "string",
             description: "The exact source line(s) this finding is about, copied verbatim.",
           },
-          context_before: { type: "string" },
-          context_after: { type: "string" },
+          context_before: { type: ["string", "null"] },
+          context_after: { type: ["string", "null"] },
           side: { type: "string", enum: ["right", "left"] },
           claim: { type: "string" },
-          evidence: { type: "string" },
-          suggested_fix: { type: "string" },
+          evidence: { type: ["string", "null"] },
+          suggested_fix: { type: ["string", "null"] },
           boundary_owner: { type: "string", enum: ["current", "external"] },
         },
       },
@@ -44,14 +50,14 @@ export const FINDINGS_SCHEMA = {
 export const REQUIREMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["criteria"],
+  required: ["criteria", "extras"],
   properties: {
     criteria: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["workItemId", "criterion", "verdict", "note"],
+        required: ["workItemId", "criterion", "verdict", "note", "quote", "file"],
         properties: {
           workItemId: { type: "number" },
           criterion: {
@@ -61,10 +67,10 @@ export const REQUIREMENT_SCHEMA = {
           verdict: { type: "string", enum: [...REQ_VERDICTS] },
           note: { type: "string" },
           quote: {
-            type: "string",
+            type: ["string", "null"],
             description: "Exact source line(s) from the diff that evidence this verdict.",
           },
-          file: { type: "string" },
+          file: { type: ["string", "null"] },
         },
       },
     },
@@ -74,11 +80,11 @@ export const REQUIREMENT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["claim", "file"],
+        required: ["claim", "file", "quote"],
         properties: {
           claim: { type: "string" },
           file: { type: "string" },
-          quote: { type: "string" },
+          quote: { type: ["string", "null"] },
         },
       },
     },
@@ -90,7 +96,7 @@ export const REQUIREMENT_SCHEMA = {
 export const VERDICT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["refuted", "reason", "confidence"],
+  required: ["refuted", "reason", "confidence", "suggested_severity"],
   properties: {
     refuted: {
       type: "boolean",
@@ -98,7 +104,11 @@ export const VERDICT_SCHEMA = {
     },
     reason: { type: "string" },
     confidence: { type: "number", minimum: 0, maximum: 1 },
-    suggested_severity: { type: "string", enum: [...SEVERITIES] },
+    suggested_severity: {
+      type: ["string", "null"],
+      enum: [...SEVERITIES, null],
+      description: "Only when the finding holds but at a different severity; otherwise null.",
+    },
   },
 } as const;
 
@@ -114,12 +124,12 @@ export const TRIAGE_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["index", "keep", "reason"],
+        required: ["index", "keep", "reason", "severity"],
         properties: {
           index: { type: "number" },
           keep: { type: "boolean" },
           reason: { type: "string" },
-          severity: { type: "string", enum: [...SEVERITIES] },
+          severity: { type: ["string", "null"], enum: [...SEVERITIES, null] },
         },
       },
     },

@@ -14,15 +14,35 @@ TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #      network while every Node tool fails on the same machine.
 if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
   if [ -z "${PRR_CA_CERTS:-}" ] && [ -f "$TOOL_DIR/.env" ]; then
+    # head -1: the in-process loader keeps the FIRST occurrence of a duplicated key, and
+    # the wrapper must agree with it.
     PRR_CA_CERTS="$(sed -n 's/^[[:space:]]*PRR_CA_CERTS[[:space:]]*=[[:space:]]*//p' "$TOOL_DIR/.env" \
-      | tail -1 | sed 's/^["'\'']//; s/["'\'']$//')"
+      | head -1 | sed 's/^["'\'']//; s/["'\'']$//')"
   fi
-  for candidate in "${PRR_CA_CERTS:-}" "${REQUESTS_CA_BUNDLE:-}" "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}"; do
-    if [ -n "$candidate" ] && [ -r "$candidate" ]; then
-      export NODE_EXTRA_CA_CERTS="$candidate"
-      break
-    fi
-  done
+  # PRR_CA_CERTS may be a comma-separated list; NODE_EXTRA_CA_CERTS takes one file, so a
+  # multi-file value is concatenated into a bundle first.
+  ca_paths="$(printf '%s' "${PRR_CA_CERTS:-}" | tr ',' '\n' | sed 's/^ *//; s/ *$//')"
+  if [ "$(printf '%s\n' "$ca_paths" | grep -c .)" -gt 1 ]; then
+    bundle="$TOOL_DIR/runs/.ca-bundle.pem"
+    mkdir -p "$TOOL_DIR/runs"
+    : > "$bundle"
+    ok=1
+    while IFS= read -r p; do
+      [ -z "$p" ] && continue
+      if [ -r "$p" ]; then cat "$p" >> "$bundle"; else ok=0; fi
+    done <<EOF
+$ca_paths
+EOF
+    [ "$ok" = 1 ] && [ -s "$bundle" ] && export NODE_EXTRA_CA_CERTS="$bundle"
+  fi
+  if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
+    for candidate in "${PRR_CA_CERTS:-}" "${REQUESTS_CA_BUNDLE:-}" "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}"; do
+      if [ -n "$candidate" ] && [ -r "$candidate" ]; then
+        export NODE_EXTRA_CA_CERTS="$candidate"
+        break
+      fi
+    done
+  fi
 fi
 
 exec npx tsx "$TOOL_DIR/loop.ts" "$@"

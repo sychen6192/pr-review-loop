@@ -20,6 +20,26 @@ interface OpenAIChoice {
   message?: { content?: string | null };
   finish_reason?: string;
 }
+/**
+ * "TypeError: fetch failed" is undici hiding the real error in `cause` (often two levels
+ * deep). Surfacing the code chain is the difference between a diagnosable log line and a
+ * shrug — a production failure at exactly 301s only became explainable once the cause
+ * (UND_ERR_HEADERS_TIMEOUT) was visible.
+ */
+export function describeFetchError(e: unknown, timeoutMs: number): string {
+  if (e instanceof Error && e.name === "AbortError") {
+    return `timeout (${Math.round(timeoutMs / 1000)}s)`;
+  }
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; depth < 5 && cur instanceof Error; depth++) {
+    const code = (cur as NodeJS.ErrnoException).code;
+    parts.push(code ? `${cur.message} [${code}]` : cur.message);
+    cur = cur.cause;
+  }
+  return parts.length > 0 ? parts.join(" ← ") : String(e);
+}
+
 interface OpenAIResponse {
   choices?: OpenAIChoice[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -97,10 +117,7 @@ export class OpenAICompatRunner implements ModelRunner {
         completionTokens: parsed.usage?.completion_tokens,
       };
     } catch (e) {
-      const msg = e instanceof Error && e.name === "AbortError"
-        ? `timeout (${Math.round(timeoutMs / 1000)}s)`
-        : String(e);
-      return { text: "", model: req.model, error: msg };
+      return { text: "", model: req.model, error: describeFetchError(e, timeoutMs) };
     } finally {
       clearTimeout(timer);
     }

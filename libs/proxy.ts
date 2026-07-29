@@ -44,7 +44,7 @@ export const NO_PROXY = envAny("PRR_NO_PROXY", "NO_PROXY", "no_proxy");
  * subdomains, and `*` disables proxying entirely. Internal endpoints (a self-hosted model
  * server, say) almost always need to bypass the proxy that fronts external traffic.
  */
-export function bypassesProxy(host: string, noProxy: string = NO_PROXY): boolean {
+export function bypassesProxy(host: string, noProxy: string = NO_PROXY, port?: string): boolean {
   if (!noProxy) return false;
   const h = host.toLowerCase();
   for (const raw of noProxy.split(",")) {
@@ -53,8 +53,17 @@ export function bypassesProxy(host: string, noProxy: string = NO_PROXY): boolean
     // A bare "*" disables proxying entirely. It has to be checked before the wildcard
     // prefix is stripped, or it reduces to an empty entry and is silently ignored.
     if (trimmed === "*") return true;
-    const entry = trimmed.replace(/^\*/, "");
+    let entry = trimmed.replace(/^\*/, "");
     if (!entry) continue;
+    // curl-style host:port entry: the port must match too (an unknown port matches nothing).
+    // Without this, NO_PROXY=localhost:4000 — the obvious way to exempt a local model
+    // endpoint — silently matches nothing and the traffic still goes to the proxy.
+    const m = /^(.*):(\d+)$/.exec(entry);
+    if (m) {
+      if (port === undefined || m[2] !== port) continue;
+      entry = m[1]!;
+      if (!entry) continue;
+    }
     const suffix = entry.startsWith(".") ? entry : `.${entry}`;
     if (h === entry || h.endsWith(suffix)) return true;
   }
@@ -63,35 +72,44 @@ export function bypassesProxy(host: string, noProxy: string = NO_PROXY): boolean
 
 const CA = caBundle();
 
+// undici's own timers are DISABLED on every dispatcher we hand out. Its defaults
+// (headersTimeout / bodyTimeout = 300s) sit underneath our per-request AbortController
+// timers and fire first: a reasoning model that takes >5 min before the first byte dies
+// with a bare "TypeError: fetch failed" long before our 900s deadline. Diagnosed from a
+// production run that failed at exactly 301s. Timeouts are our timers' job alone.
+const NO_UNDICI_TIMEOUTS = { headersTimeout: 0, bodyTimeout: 0 } as const;
+
 /**
- * Dispatcher for unproxied connections. Exists only to carry the extra CA; when none is
- * configured this stays undefined and fetch keeps its own default.
- *
- * It is also installed globally, so a `fetch()` that forgets to pass a dispatcher still
- * gets the corporate CA rather than failing with an unexplained UNABLE_TO_VERIFY_LEAF_SIGNATURE.
+ * Dispatcher for unproxied connections. Always created — even with no extra CA it exists
+ * to override undici's 300s default timeouts (see above). Also installed globally, so a
+ * `fetch()` that forgets to pass a dispatcher still gets both the CA and the timeout fix.
  */
-const directAgent: Dispatcher | undefined = CA ? new Agent({ connect: { ca: CA } }) : undefined;
-if (directAgent) {
-  setGlobalDispatcher(directAgent);
-  logVerbose(`Extra CA trust: ${caSummary()}`);
-}
+const directAgent: Dispatcher = new Agent({
+  ...NO_UNDICI_TIMEOUTS,
+  ...(CA ? { connect: { ca: CA } } : {}),
+});
+setGlobalDispatcher(directAgent);
+if (CA) logVerbose(`Extra CA trust: ${caSummary()}`);
 
 const cache = new Map<string, Dispatcher | undefined>();
 
-/** The dispatcher fetch should use for a URL. */
+/** The dispatcher fetch should use for a URL. Never undefined: even the direct path must
+ * override undici's default 300s header/body timeouts. */
 export function dispatcherFor(url: string): Dispatcher | undefined {
   let host: string;
+  let port: string;
   let isHttps: boolean;
   try {
     const u = new URL(url);
     host = u.hostname;
     isHttps = u.protocol === "https:";
+    port = u.port || (isHttps ? "443" : "80");
   } catch {
     return directAgent;
   }
   // Bypassing the proxy still needs the CA: an internal endpoint reached directly is
   // exactly the kind of host whose certificate the corporate root signed.
-  if (bypassesProxy(host)) return directAgent;
+  if (bypassesProxy(host, NO_PROXY, port)) return directAgent;
 
   const proxy = isHttps ? HTTPS_PROXY || HTTP_PROXY : HTTP_PROXY || HTTPS_PROXY;
   if (!proxy) return directAgent;
@@ -102,6 +120,7 @@ export function dispatcherFor(url: string): Dispatcher | undefined {
         proxy,
         new ProxyAgent({
           uri: proxy,
+          ...NO_UNDICI_TIMEOUTS,
           // Headers here ride on the CONNECT request itself, which is where the filtering
           // happens — setting a User-Agent only on the tunnelled request would be too late.
           headers: { "user-agent": USER_AGENT },

@@ -199,7 +199,9 @@ export function toRequirementFindings(
       file: res.file?.path ?? f.file,
       sources: ["requirement"],
       fingerprint: createHash("sha1")
-        .update(`req ${f.file} ${f.quote.replace(/\s+/g, " ").trim()}`)
+        // Normalised like the code-axis fingerprint (aggregate.ts): the model's path
+        // spelling must not change the identity of the same finding between runs.
+        .update(`req ${f.file.replace(/^\/+/, "").toLowerCase()} ${f.quote.replace(/\s+/g, " ").trim()}`)
         .digest("hex")
         .slice(0, 12),
       anchor: res.anchor,

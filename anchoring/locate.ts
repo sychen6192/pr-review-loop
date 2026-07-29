@@ -56,6 +56,11 @@ export function resolveFile(rawPath: string, files: FileDiff[]): FileDiff | unde
   const byName = files.filter((f) => (norm(f.path).split("/").pop() ?? "") === basename);
   if (byName.length === 1) return byName[0];
 
+  // A renamed file is often cited by its old path — the diff header shows both, and models
+  // copy whichever they read last.
+  const byOld = files.filter((f) => f.originalPath && norm(f.originalPath) === want);
+  if (byOld.length === 1) return byOld[0];
+
   return undefined;
 }
 
@@ -65,20 +70,30 @@ interface Candidate {
 }
 
 function findWindows(haystack: string[], needle: string[], normalize: (s: string) => string): Candidate[] {
+  // Blank lines are elastic on both sides: the needle's blanks are dropped, and blank
+  // haystack lines may sit between consecutive needle lines. Models quoting a small
+  // function routinely keep OR drop its interior blank lines — requiring adjacency made
+  // the verbatim-with-blank quote unfindable at its true location, which then either
+  // degraded a perfectly-quoted finding or, worse, matched a blankless duplicate elsewhere.
   const n = needle.map(normalize).filter((l) => l !== "");
   if (n.length === 0) return [];
   const hay = haystack.map(normalize);
   const out: Candidate[] = [];
 
-  for (let i = 0; i + n.length <= hay.length; i++) {
+  for (let i = 0; i < hay.length; i++) {
+    if (hay[i] !== n[0]) continue;
+    let k = i;
     let ok = true;
-    for (let j = 0; j < n.length; j++) {
-      if (hay[i + j] !== n[j]) {
+    for (let j = 1; j < n.length; j++) {
+      let next = k + 1;
+      while (next < hay.length && hay[next] === "") next++;
+      if (next >= hay.length || hay[next] !== n[j]) {
         ok = false;
         break;
       }
+      k = next;
     }
-    if (ok) out.push({ startLine: i + 1, endLine: i + n.length });
+    if (ok) out.push({ startLine: i + 1, endLine: k + 1 });
   }
   return out;
 }
@@ -108,10 +123,14 @@ function contextScore(
 }
 
 function inAnyHunk(file: FileDiff, cand: Candidate, side: "right" | "left"): boolean {
+  // Span overlap, not just the start line: a model quoting a whole function whose changed
+  // line sits near the bottom starts its quote above the hunk, and testing only startLine
+  // rejected exactly the findings that most deserve to land.
   return file.hunks.some((h) => {
     const start = side === "right" ? h.rightStart : h.leftStart;
     const count = side === "right" ? h.rightCount : h.leftCount;
-    return cand.startLine >= start && cand.startLine <= start + Math.max(count, 1) - 1;
+    const end = start + Math.max(count, 1) - 1;
+    return cand.startLine <= end && cand.endLine >= start;
   });
 }
 
@@ -145,6 +164,13 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
   const before = quoteLines(finding.context_before ?? "");
   const after = quoteLines(finding.context_after ?? "");
 
+  // A candidate accepted at a strict tier whose model-provided context scores zero. Kept
+  // as a fallback while looser tiers get a chance to produce a context-confirmed match:
+  // a model that reformats the line it quotes (stripped indentation, say) can hit a
+  // different-but-textually-exact line at tier 1 while the intended line only matches at
+  // tier 2 — and only the context can tell those apart.
+  let contradicted: { cand: Candidate; normalize: (s: string) => string } | undefined;
+
   for (const normalize of NORMALIZERS) {
     const cands = findWindows(lines, needle, normalize);
     if (cands.length === 0) continue;
@@ -175,6 +201,12 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
       };
     }
 
+    const hasContext = before.length > 0 || after.length > 0;
+    if (hasContext && contextScore(lines, pool[0]!, before, after, normalize) === 0) {
+      if (!contradicted) contradicted = { cand: pool[0]!, normalize };
+      continue; // try a looser tier for a candidate the context actually confirms
+    }
+
     const cand = pool[0]!;
     if (!inAnyHunk(file, cand, side)) {
       // reviewdog's diff_context filter, applied to LLM findings: an issue outside the
@@ -196,6 +228,31 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
         // ADO's docs say offsets start at 0 but its own examples use 1, and 0/missing
         // offsets are implicated in the UI breakage of azure-devops-mcp #793.
         // Always send both ends, always 1-based.
+        startOffset: 1,
+        endOffset: Math.max(lastLine.length + 1, 1),
+      },
+    };
+  }
+
+  // No tier produced a context-confirmed match; fall back to the exact-but-unconfirmed
+  // candidate rather than degrading — the model's context lines may simply have been
+  // reworded, and the quote itself did match uniquely.
+  if (contradicted) {
+    const { cand } = contradicted;
+    if (!inAnyHunk(file, cand, side)) {
+      return {
+        file,
+        failure: "outside-changed-lines",
+        detail: `quote located at ${file.path}:${cand.startLine}, outside this change`,
+      };
+    }
+    const lastLine = stripCr(lines[cand.endLine - 1] ?? "");
+    return {
+      file,
+      anchor: {
+        side,
+        startLine: cand.startLine,
+        endLine: cand.endLine,
         startOffset: 1,
         endOffset: Math.max(lastLine.length + 1, 1),
       },

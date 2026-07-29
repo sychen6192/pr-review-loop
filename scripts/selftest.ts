@@ -22,6 +22,9 @@ import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 import { load, sourcePaths } from "../libs/tls";
 import { Semaphore } from "../libs/limit";
+import { anchorAndDedupe } from "../gates/aggregate";
+import type { FinderOutput } from "../gates/finder";
+import { FINDINGS_SCHEMA, REQUIREMENT_SCHEMA, TRIAGE_SCHEMA, VERDICT_SCHEMA } from "../models/schemas";
 import { PRLOOP_ROOT } from "../config";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -719,6 +722,14 @@ section("NO_PROXY matching rules");
   eq("lowercase is also read", pick({ https_proxy: "http://c" }, ...order), "http://c");
   eq("all empty -> empty string", pick({}, ...order), "");
 }
+{
+  // curl-style host:port entries must match on port, and mismatched port must not bypass.
+  eq("host:port entry matches host+port", bypassesProxy("localhost", "localhost:4000", "4000"), true);
+  eq("host:port entry rejects other port", bypassesProxy("localhost", "localhost:4000", "8080"), false);
+  eq("plain host entry ignores port", bypassesProxy("localhost", "localhost", "4000"), true);
+  eq("host:port without port info does not match", bypassesProxy("localhost", "localhost:4000"), false);
+}
+
 section("proxy display redaction");
 {
   // Normalising through URL() drops a default port, which reads as lost configuration.
@@ -791,6 +802,156 @@ section("dispatcher carries the CA on every path");
     check("CA is applied to NO_PROXY hosts too", out.value.bypassed === true);
   }
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+section("anchoring: blank-elastic multi-line quotes");
+{
+  // Model quotes a small function keeping its interior blank line; the file has the same
+  // two statements adjacent elsewhere. The true (blank-separated) location must win.
+  const f = mkFile("/src/mod.py", [
+    "cleanup()",        // 1  — adjacent duplicate
+    "close()",          // 2
+    "def shutdown():",  // 3
+    "    cleanup()",    // 4
+    "",                 // 5
+    "    close()",      // 6
+  ], [4, 5, 6]);
+  const r = anchorFinding(mkFinding({ file: "/src/mod.py", quote: "    cleanup()\n\n    close()" }), [f]);
+  eq("verbatim quote across a blank line anchors at its true location", r.anchor?.startLine, 4);
+  eq("window spans through the blank line", r.anchor?.endLine, 6);
+
+  // The same quote WITHOUT the blank line must still find the blank-separated original.
+  const g = mkFile("/src/only.py", [
+    "def shutdown():",
+    "    cleanup()",
+    "",
+    "    close()",
+  ], [2, 3, 4]);
+  const r2 = anchorFinding(mkFinding({ file: "/src/only.py", quote: "    cleanup()\n    close()" }), [g]);
+  eq("blankless quote of blank-separated code still anchors", r2.anchor?.startLine, 2);
+  eq("...and its end covers the real last line", r2.anchor?.endLine, 4);
+}
+
+section("anchoring: hunk gate uses the whole span");
+{
+  // A quote that STARTS above the hunk but contains the changed line must not be rejected
+  // as outside-changed-lines: the changed code is inside the quoted span.
+  const lines = [
+    "function f() {",   // 1
+    "  a();",           // 2
+    "  b();",           // 3
+    "  c();",           // 4
+    "  d();",           // 5
+    "  e();",           // 6
+    "  f();",           // 7
+    "  g();",           // 8
+    "  h();",           // 9
+    "  fixed();",       // 10 ← the actual change
+    "}",                // 11
+  ];
+  const f: FileDiff = {
+    path: "/src/span.ts", changeType: "edit", binary: false, truncated: false,
+    language: "typescript", rightLines: lines, leftLines: lines.slice(0, 9).concat(["  old();", "}"]),
+    changedRightLines: new Set([10]),
+    hunks: [{ leftStart: 4, leftCount: 8, rightStart: 4, rightCount: 8, body: "" }],
+  };
+  const r = anchorFinding(mkFinding({ file: "/src/span.ts", quote: lines.slice(0, 11).join("\n") }), [f]);
+  eq("span containing the hunk is accepted even though it starts above it", r.anchor?.startLine, 1);
+}
+
+section("anchoring: context-contradicted exact singleton");
+{
+  // Line 2 (intended, indented, changed) vs line 6 (identical text at col 0, unchanged).
+  // The model strips the indentation, so tier 1 uniquely hits the WRONG line 6; the
+  // provided context only fits line 2, which tier 2 can see. Context must win.
+  const f = mkFile("/src/ctx.ts", [
+    "function inner() {",  // 1
+    "  return null;",      // 2 ← intended
+    "}",                   // 3
+    "function outer() {",  // 4
+    "  run();",            // 5
+    "return null;",        // 6 — exact match for the unindented quote
+    "}",                   // 7
+  ], [2, 6]);
+  const r = anchorFinding(
+    mkFinding({
+      file: "/src/ctx.ts",
+      quote: "return null;",
+      context_before: "function inner() {",
+    }),
+    [f],
+  );
+  // both 2 and 6 have "}" after; only 2 has the matching before-context
+  eq("looser tier with confirming context beats the exact-but-contradicted hit", r.anchor?.startLine, 2);
+
+  // Same setup but context matches the exact hit → tier 1 result stands.
+  const r2 = anchorFinding(
+    mkFinding({ file: "/src/ctx.ts", quote: "return null;", context_before: "  run();" }),
+    [f],
+  );
+  eq("exact hit with confirming context is kept", r2.anchor?.startLine, 6);
+}
+
+section("aggregate: dedupe pools and ranking");
+{
+  const file = mkFile("/src/x.ts", ["const a = 1;", "use(a);"], [1, 2]);
+  const mk = (model: string, over: Partial<RawFinding>): FinderOutput => ({
+    model,
+    findings: [mkFinding({ file: "/src/x.ts", quote: "const a = 1;", ...over })],
+    rejected: 0,
+    raw: "",
+  });
+  // Anchor-failed duplicate (bad quote) from model A, anchored from model B, same claim.
+  const cands = anchorAndDedupe(
+    [mk("a", { quote: "const a = 999;" }), mk("b", {})],
+    [file],
+  );
+  eq("anchored finding survives with its anchor intact", cands.merged.length, 1);
+  eq("anchor-failed twin stays in degraded, not merged in", cands.degraded.length, 1);
+  eq("anchor-failed twin did not corroborate", cands.merged[0]?.sources.length, 1);
+
+  // Same line, same quote, different category → must merge (label instability).
+  const cands2 = anchorAndDedupe(
+    [mk("a", { category: "concurrency" }), mk("b", { category: "correctness" })],
+    [file],
+  );
+  eq("same quote with differing category labels merges", cands2.merged.length, 1);
+  eq("...and counts both sources", cands2.merged[0]?.sources.length, 2);
+}
+
+section("strict-mode schema invariant");
+{
+  // OpenAI-strict json_schema: `required` must list every key in properties, at every
+  // level. A violation is a hard HTTP 400 from OpenAI-validating backends (seen live).
+  const walk = (node: unknown, path: string): string[] => {
+    if (typeof node !== "object" || node === null) return [];
+    const o = node as Record<string, unknown>;
+    const bad: string[] = [];
+    if (o["type"] === "object" && typeof o["properties"] === "object" && o["properties"] !== null) {
+      const keys = Object.keys(o["properties"] as object);
+      const req = Array.isArray(o["required"]) ? (o["required"] as string[]) : [];
+      for (const k of keys) if (!req.includes(k)) bad.push(`${path}.${k}`);
+    }
+    for (const [k, v] of Object.entries(o)) bad.push(...walk(v, `${path}.${k}`));
+    return bad;
+  };
+  for (const [name, schema] of [
+    ["findings", FINDINGS_SCHEMA],
+    ["requirement", REQUIREMENT_SCHEMA],
+    ["verdict", VERDICT_SCHEMA],
+    ["triage", TRIAGE_SCHEMA],
+  ] as const) {
+    const missing = walk(schema, name);
+    check(`${name} schema is strict-mode compliant`, missing.length === 0, missing.join(", "));
+  }
+}
+
+section("skeptic verdict semantics");
+{
+  const empty = parseVerdictForTest("{}", "m");
+  check("a verdict without a refuted field is an error, not an answer", empty.error !== undefined);
+  const good = parseVerdictForTest('{"refuted": false, "reason": "holds", "confidence": 0.8, "suggested_severity": null}', "m");
+  check("null suggested_severity parses", good.error === undefined && good.suggestedSeverity === undefined);
 }
 
 section("model call concurrency cap");

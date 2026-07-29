@@ -4,6 +4,11 @@ import type { Severity } from "../config";
 // --- Azure DevOps intake ---
 
 export interface PrRef {
+  // Collection base URL, derived from the PR URL itself. Carries the scheme, host and any
+  // on-prem virtual directory / collection path, so REST paths never have to be rebuilt
+  // from a configured host.
+  baseUrl: string;
+  // Collection (or org) name. Display only — routing uses baseUrl.
   org: string;
   project: string;
   repoId: string;

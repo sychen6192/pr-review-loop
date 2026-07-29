@@ -55,7 +55,7 @@ const files = [
 ];
 
 const ctx = {
-  ref: { org: "contoso", project: "Shop", repoId: "shop-api", prId: 4821 },
+  ref: { baseUrl: "https://dev.azure.com/contoso", org: "contoso", project: "Shop", repoId: "shop-api", prId: 4821 },
   pr: {
     title: "退款流程支援部分退款",
     description: "實作 PBI #12043 的部分退款。",

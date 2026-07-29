@@ -34,8 +34,10 @@ export const ADO_PAT = process.env.PRR_ADO_PAT ?? process.env.SYSTEM_ACCESSTOKEN
 // auto = use a PAT if configured, otherwise mint a token via the az CLI.
 export const ADO_AUTH_MODE = (process.env.PRR_AUTH_MODE ?? "auto") as "auto" | "pat" | "azcli";
 export const AZ_BIN = process.env.PRR_AZ_BIN ?? "az";
-// Override for on-prem Azure DevOps Server. Default is the cloud host.
-export const ADO_BASE_URL = process.env.PRR_ADO_BASE_URL ?? "https://dev.azure.com";
+// Normally left empty: the collection base is derived from the PR URL, which is the only
+// thing that works across cloud, visualstudio.com and on-prem (virtual directory +
+// collection). Set this only when the API host differs from the browser host.
+export const ADO_BASE_URL = process.env.PRR_ADO_BASE_URL ?? "";
 export const ADO_API_VERSION = process.env.PRR_ADO_API_VERSION ?? "7.1";
 export const ADO_TIMEOUT_MS = Number(process.env.PRR_ADO_TIMEOUT_MS ?? 60_000);
 export const ADO_MAX_RETRIES = Number(process.env.PRR_ADO_MAX_RETRIES ?? 3);

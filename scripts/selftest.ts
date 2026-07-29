@@ -3,7 +3,7 @@
 // class of bug that motivated the whole project.
 import { splitLines } from "../ado/blobs";
 import { anchorFinding, resolveFile } from "../anchoring/locate";
-import { parsePrUrl } from "../ado/client";
+import { parsePrUrl, prBase } from "../ado/client";
 import { buildHunks, diffLines, renderUnifiedDiff } from "../libs/diff";
 import { parseJsonObject } from "../libs/json";
 import { detectLanguage, isNoiseFile, isReviewable } from "../libs/lang";
@@ -286,6 +286,44 @@ section("PR URL 解析");
 {
   const r = parsePrUrl("https://dev.azure.com/org/Proj%20With%20Space/_git/repo/pullrequest/7");
   eq("URL-encoded project 名稱", r.project, "Proj With Space");
+}
+{
+  // The API base must come from the URL, not be rebuilt from a configured host — that is
+  // what broke on-prem: the virtual directory was dropped and the collection was mistaken
+  // for the org, producing a request to an entirely different server.
+  const cloud = parsePrUrl("https://dev.azure.com/myorg/MyProject/_git/my-repo/pullrequest/1234");
+  eq("雲端 API base", cloud.baseUrl, "https://dev.azure.com/myorg");
+
+  const onpremPrefix = parsePrUrl(
+    "https://tfs.corp.local/tfs/DefaultCollection/MyProject/_git/my-repo/pullrequest/42",
+  );
+  eq("on-prem 含虛擬目錄：API base 保留 /tfs", onpremPrefix.baseUrl, "https://tfs.corp.local/tfs/DefaultCollection");
+  eq("on-prem 含虛擬目錄：collection", onpremPrefix.org, "DefaultCollection");
+  eq("on-prem 含虛擬目錄：project", onpremPrefix.project, "MyProject");
+  eq("on-prem 含虛擬目錄：repo", onpremPrefix.repoId, "my-repo");
+  eq("on-prem 含虛擬目錄：PR id", onpremPrefix.prId, 42);
+
+  const onpremPlain = parsePrUrl("https://ado.corp.local/DefaultCollection/Proj/_git/repo/pullrequest/9");
+  eq("on-prem 無虛擬目錄", onpremPlain.baseUrl, "https://ado.corp.local/DefaultCollection");
+
+  const onpremDeep = parsePrUrl("https://srv.corp.local/tfs/apps/TeamCollection/Proj/_git/repo/pullrequest/3");
+  eq("on-prem 多層虛擬目錄", onpremDeep.baseUrl, "https://srv.corp.local/tfs/apps/TeamCollection");
+
+  const port = parsePrUrl("https://tfs.corp.local:8443/tfs/Coll/Proj/_git/repo/pullrequest/5");
+  eq("on-prem 自訂連接埠保留", port.baseUrl, "https://tfs.corp.local:8443/tfs/Coll");
+
+  const vsts = parsePrUrl("https://myorg.visualstudio.com/MyProject/_git/repo/pullrequest/8");
+  eq("visualstudio.com：collection 在主機名，路徑為空", vsts.baseUrl, "https://myorg.visualstudio.com");
+  eq("visualstudio.com：project", vsts.project, "MyProject");
+}
+{
+  // The composed REST path is what actually gets requested; assert it end to end.
+  const r = parsePrUrl("https://tfs.corp.local/tfs/DefaultCollection/MyProject/_git/my-repo/pullrequest/42");
+  eq(
+    "on-prem 組出的 PR API 位址",
+    prBase(r),
+    "https://tfs.corp.local/tfs/DefaultCollection/MyProject/_apis/git/repositories/my-repo/pullRequests/42",
+  );
 }
 {
   let threw = false;

@@ -23,6 +23,7 @@ import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 import { load, sourcePaths } from "../libs/tls";
 import { Semaphore } from "../libs/limit";
 import { describeBadCompletion, isTransientModelError } from "../models/runner";
+import { explainSpawnError, planSpawn } from "../libs/shell";
 import { anchorAndDedupe } from "../gates/aggregate";
 import type { FinderOutput } from "../gates/finder";
 import { FINDINGS_SCHEMA, REQUIREMENT_SCHEMA, TRIAGE_SCHEMA, VERDICT_SCHEMA } from "../models/schemas";
@@ -953,6 +954,36 @@ section("skeptic verdict semantics");
   check("a verdict without a refuted field is an error, not an answer", empty.error !== undefined);
   const good = parseVerdictForTest('{"refuted": false, "reason": "holds", "confidence": 0.8, "suggested_severity": null}', "m");
   check("null suggested_severity parses", good.error === undefined && good.suggestedSeverity === undefined);
+}
+
+section("Windows process spawning");
+{
+  // planSpawn is platform-parameterised so these run on any host.
+  const posix = planSpawn("opencode", ["run", "--agent", "x", "a prompt"], "linux");
+  eq("posix passes the command through untouched", posix.file, "opencode");
+  check("posix needs no verbatim-args flag", posix.windowsVerbatimArguments === undefined);
+  check("posix has no length objection", posix.error === undefined);
+
+  // The command line limit is the failure that only appears on the user's platform: Linux
+  // allows ~2MB, cmd.exe allows 8191. A review prompt carrying a diff is far over.
+  const huge = planSpawn("C:\\tools\\opencode.exe", ["run", "x".repeat(40_000)], "win32");
+  check("oversized command line is refused, not spawned", huge.error !== undefined);
+  check("...and says what to do instead", (huge.error ?? "").includes("stdin"));
+
+  // A .cmd shim gets the lower cmd.exe limit, and must say so — 12k chars fits Windows
+  // but not cmd.exe, which is exactly the confusing middle case.
+  const shim = planSpawn("C:\\tools\\opencode.cmd", ["run", "x".repeat(12_000)], "win32");
+  check("shim applies the stricter cmd.exe limit", (shim.error ?? "").includes("8191"));
+
+  // Every spawn errno needs its own explanation: they have different fixes and the old
+  // message blamed a missing install for all of them.
+  const ex = (code: string) => explainSpawnError(Object.assign(new Error("x"), { code }), "opencode");
+  check("ENOENT blames PATH", ex("ENOENT").includes("not found"));
+  check("EINVAL names the .cmd rule", ex("EINVAL").includes("cmd.exe"));
+  check("E2BIG names the length", ex("E2BIG").includes("too long"));
+  check("ENAMETOOLONG names the length", ex("ENAMETOOLONG").includes("too long"));
+  check("EACCES names permissions", ex("EACCES").includes("executable"));
+  check("unknown code still reports something", ex("EWEIRD").includes("failed to start"));
 }
 
 section("unusable completions are named, not left to the JSON parser");

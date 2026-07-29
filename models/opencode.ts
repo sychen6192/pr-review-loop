@@ -11,6 +11,7 @@
 // once on a parse failure — but a weak model will still comply less reliably here than on
 // the openai path. Prefer the openai runner when the endpoint supports guided decoding.
 import { spawn } from "node:child_process";
+import { explainSpawnError, planSpawn } from "../libs/shell";
 import {
   AGENT_TIMEOUT_MS,
   OPENCODE_AGENT,
@@ -83,9 +84,24 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
     if (OPENCODE_JSON_EVENTS) args.push("--format", "json");
     args.push(prompt); // positional, last
 
-    const child = spawn(OPENCODE_BIN, args, {
+    // Windows needs the command resolved through PATHEXT and .cmd shims routed via cmd.exe;
+    // it also caps the command line, which a review prompt carrying a diff blows past by an
+    // order of magnitude. Catching that here turns an unexplained errno into the actual fact.
+    const plan = planSpawn(OPENCODE_BIN, args);
+    if (plan.error) {
+      const msg =
+        `${plan.error}. The review prompt is ${prompt.length} chars, which cannot be passed as ` +
+        `a command-line argument on Windows. Lower PRR_MAX_DIFF_CHARS, or run prloop under WSL`;
+      log(`[${label}] [FAIL] ${msg}`);
+      stopHeartbeat();
+      resolve({ text: "", model, error: msg });
+      return;
+    }
+
+    const child = spawn(plan.file, plan.args, {
       cwd: PRLOOP_ROOT,
       env: process.env,
+      windowsVerbatimArguments: plan.windowsVerbatimArguments,
       // opencode >= 1.17 waits for stdin EOF when stdin is piped.
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -137,7 +153,10 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
 
     child.on("close", finish);
     child.on("error", (err) => {
-      spawnError = `opencode failed to start: ${err.message} (install the opencode CLI, or set PRR_OPENCODE_BIN)`;
+      // The old message blamed a missing install for every errno, which is wrong for the
+      // two failures that actually bite on Windows (EINVAL on a .cmd, and an oversized
+      // command line) and sends people to reinstall a CLI that is already there.
+      spawnError = `${explainSpawnError(err, OPENCODE_BIN)} — install the opencode CLI, or set PRR_OPENCODE_BIN`;
       logVerbose(`[${label}] ${spawnError}`);
       finish();
     });

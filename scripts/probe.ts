@@ -119,6 +119,26 @@ interface TlsResult {
   der: Buffer[];
 }
 
+/**
+ * How to enable --use-system-ca on the running Node, which differs by version:
+ * it exists from 22.15 / 23.5, but only became permissible inside NODE_OPTIONS later —
+ * and NODE_OPTIONS is the only route that survives an `npx tsx` invocation.
+ */
+function systemCaAdvice(): string {
+  const [maj = 0, min = 0] = process.versions.node.split(".").map(Number);
+  const hasFlag = maj > 23 || (maj === 23 && min >= 5) || (maj === 22 && min >= 15);
+  if (!hasFlag) {
+    return `此版本沒有 --use-system-ca（需 22.15+ / 23.5+），請改用 NODE_EXTRA_CA_CERTS`;
+  }
+  if (maj >= 24) {
+    return `export NODE_OPTIONS=--use-system-ca   然後照常執行（Node 24 起允許放在 NODE_OPTIONS）`;
+  }
+  return (
+    "node --use-system-ca ...（此版本不允許放進 NODE_OPTIONS，" +
+    "搭配 npx/tsx 不好用，建議改用 NODE_EXTRA_CA_CERTS）"
+  );
+}
+
 /** DER → PEM. Node hands back raw certificate bytes; NODE_EXTRA_CA_CERTS wants PEM text. */
 function derToPem(der: Buffer): string {
   const b64 = der.toString("base64").match(/.{1,64}/g)?.join("\n") ?? "";
@@ -278,8 +298,8 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
     console.log("     export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem");
     console.log("");
     console.log("  其他做法：");
-    console.log("     • Node 22.15+ / 23.5+ 可用系統信任存放區：node --use-system-ca ...");
-    console.log("       ⚠️ 這個旗標「不能」放進 NODE_OPTIONS，所以搭配 npx/tsx 不好用");
+    console.log(`     • 使用系統信任存放區（你的 Node 是 v${process.versions.node}）：`);
+    console.log(`       ${systemCaAdvice()}`);
     for (const candidate of ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"]) {
       if (fs.existsSync(candidate)) {
         console.log(`     • 系統憑證包存在，可先試：export NODE_EXTRA_CA_CERTS=${candidate}`);

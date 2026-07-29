@@ -10,7 +10,7 @@ import * as tls from "node:tls";
 import { ADO_API_VERSION, ADO_PAT, PRLOOP_ROOT } from "../config";
 import { authHeader, describeAuthMode } from "../ado/auth";
 import { parsePrUrl, prBase } from "../ado/client";
-import { HTTPS_PROXY, HTTP_PROXY, USER_AGENT, bypassesProxy, proxySummary, redactProxy } from "../libs/proxy";
+import { HTTPS_PROXY, HTTP_PROXY, USER_AGENT, bypassesProxy, dispatcherFor, proxySummary, redactProxy } from "../libs/proxy";
 import { commandExists, run } from "../libs/shell";
 import { AZ_BIN } from "../config";
 
@@ -66,8 +66,11 @@ async function rawGet(url: string, header: string): Promise<void> {
   const started = Date.now();
   try {
     const res = await fetch(url, {
-      headers: { Authorization: header, Accept: "application/json" },
-    });
+      headers: { Authorization: header, Accept: "application/json", "User-Agent": USER_AGENT },
+      // Without this the request bypasses the proxy entirely and fails with ECONNREFUSED,
+      // which looks like a network problem rather than a missing dispatcher.
+      dispatcher: dispatcherFor(url),
+    } as RequestInit);
     const ms = Date.now() - started;
     const ctype = res.headers.get("content-type") ?? "";
     line("HTTP 狀態", `${res.status} ${res.statusText}   (${ms}ms)`);
@@ -563,9 +566,11 @@ async function main() {
   const working: string[] = [];
   for (const v of CANDIDATE_VERSIONS) {
     try {
-      const res = await fetch(`${prBase(ref)}?api-version=${v}`, {
-        headers: { Authorization: header, Accept: "application/json" },
-      });
+      const url = `${prBase(ref)}?api-version=${v}`;
+      const res = await fetch(url, {
+        headers: { Authorization: header, Accept: "application/json", "User-Agent": USER_AGENT },
+        dispatcher: dispatcherFor(url),
+      } as RequestInit);
       const ok = res.ok && (res.headers.get("content-type") ?? "").includes("json");
       console.log(`  api-version=${v.padEnd(4)} → ${res.status} ${res.statusText}${ok ? "  ✅" : ""}`);
       if (ok) working.push(v);

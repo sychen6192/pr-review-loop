@@ -12,12 +12,13 @@ import { logVerbose } from "./log";
 /**
  * User-Agent sent on both ordinary requests and the proxy CONNECT.
  *
- * Some corporate proxies filter by User-Agent, allowing browsers and git while refusing
- * requests that carry an unfamiliar one — or none at all — with a 403 on CONNECT. That
- * looks identical to "this host is blocked", but the host is fine and only the client is
- * being rejected. Presenting a recognised agent is the difference between 200 and 403.
+ * The default identifies this tool honestly. Some corporate proxies filter CONNECT by
+ * User-Agent — allowing browsers and git while refusing anything unfamiliar with a 403 —
+ * and on such a network PRR_USER_AGENT exists as an escape hatch (e.g. the exact string
+ * your git sends). That is a policy workaround for the operator to choose deliberately,
+ * not something an open tool should ship as its default.
  */
-export const USER_AGENT = process.env.PRR_USER_AGENT ?? "git/2.34.1";
+export const USER_AGENT = process.env.PRR_USER_AGENT ?? "prloop/0.1";
 
 function envAny(...names: string[]): string {
   for (const n of names) {

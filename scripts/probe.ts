@@ -207,8 +207,8 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
             if (code === "403") {
               why =
                 `proxy 拒絕放行（目前送出的 User-Agent 是「${USER_AGENT}」）。` +
-                "若 git 對同一主機是通的，多半是 proxy 依 User-Agent 過濾，" +
-                "用 PRR_USER_AGENT 換成 git 或瀏覽器的字串試試";
+                "若 git 對同一主機是通的，多半是 proxy 依 User-Agent 過濾；" +
+                "第 4b 節會測出哪種字串會被放行，再自行決定是否以 PRR_USER_AGENT 配合";
             } else if (code === "407") {
               why = "proxy 要求認證。改用 http://使用者:密碼@主機:埠 的形式設定 HTTPS_PROXY";
             } else if (code === "502" || code === "504") {
@@ -448,8 +448,8 @@ async function probeConnectVariants(host: string, port: number): Promise<void> {
     { name: "不帶任何額外標頭", headers: [] },
     { name: "只帶 User-Agent", headers: [`User-Agent: ${USER_AGENT}`] },
     {
-      name: "git 風格（UA + Proxy-Connection）",
-      headers: [`User-Agent: ${USER_AGENT}`, "Proxy-Connection: Keep-Alive"],
+      name: "git 風格（User-Agent: git/2.34.1)",
+      headers: ["User-Agent: git/2.34.1", "Proxy-Connection: Keep-Alive"],
     },
     {
       name: "undici 風格（Host 不帶埠 + Connection: close）",

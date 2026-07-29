@@ -95,7 +95,15 @@ interface RequestOpts {
   apiVersion?: string;
 }
 
-async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
+/**
+ * Performs the request and reads the FULL body inside the timeout + retry envelope.
+ *
+ * Returning a Response and letting callers stream the body later would put the body read
+ * outside both protections: a connection reset at 80% of a blob would kill the run with
+ * zero retries, and a stalled body would be bounded by nothing at all (undici's own timers
+ * are deliberately disabled in libs/proxy.ts).
+ */
+async function request(url: string, opts: RequestOpts = {}): Promise<Buffer> {
   const u = new URL(url);
   for (const [k, v] of Object.entries(opts.query ?? {})) {
     if (v !== undefined) u.searchParams.set(k, String(v));
@@ -111,6 +119,13 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
   };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
 
+  // Retrying a POST that timed out or lost its socket after the request was written can
+  // apply it twice — a duplicated comment thread, and a duplicated *summary* thread breaks
+  // --since auto (which trusts the first marker it finds). So POSTs retry only on 429,
+  // where the server has told us the request was rejected without being applied.
+  const method = opts.method ?? "GET";
+  const idempotent = method === "GET" || method === "PUT" || method === "PATCH";
+
   let lastErr: unknown;
   for (let attempt = 1; attempt <= ADO_MAX_RETRIES; attempt++) {
     const ctrl = new AbortController();
@@ -124,7 +139,6 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
         // Node's fetch ignores HTTP(S)_PROXY; the dispatcher is how a proxy gets used at all.
         dispatcher: dispatcherFor(u.toString()),
       } as RequestInit);
-      clearTimeout(timer);
 
       // A PAT that lacks scope gets a 203 + sign-in HTML page rather than a 401.
       if (res.status === 203) {
@@ -133,9 +147,12 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
           203,
         );
       }
-      if (res.status === 429 || res.status >= 500) {
+      if (res.status === 429 || (res.status >= 500 && idempotent)) {
         const retryAfter = Number(res.headers.get("retry-after") ?? 0);
         if (attempt < ADO_MAX_RETRIES) {
+          // Drain the rejected body, or the keep-alive socket stays occupied until GC and
+          // a rate-limited run slowly starves its own connection pool.
+          await res.body?.cancel().catch(() => {});
           const waitMs = retryAfter > 0 ? retryAfter * 1000 : 500 * 2 ** (attempt - 1);
           logVerbose(`ADO ${res.status}, retrying in ${waitMs}ms (attempt ${attempt}/${ADO_MAX_RETRIES})`);
           await new Promise((r) => setTimeout(r, waitMs));
@@ -145,23 +162,30 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         throw new AdoError(
-          `ADO ${opts.method ?? "GET"} ${u.pathname} failed: ${res.status} ${res.statusText}`,
+          `ADO ${method} ${u.pathname} failed: ${res.status} ${res.statusText}`,
           res.status,
           body.slice(0, 2000),
         );
       }
-      return res;
-    } catch (e) {
+      // Body read happens here, while the abort timer is still armed.
+      const buf = Buffer.from(await res.arrayBuffer());
       clearTimeout(timer);
+      return buf;
+    } catch (e) {
       lastErr = e;
       // AdoError with a status is a real API rejection: don't retry it.
       if (e instanceof AdoError && e.status !== undefined && e.status < 500 && e.status !== 429) {
         throw e;
       }
+      // A network-level failure on a POST is ambiguous — the request may already have been
+      // applied. Duplicating a thread is worse than reporting the failure.
+      if (!idempotent) break;
       if (attempt >= ADO_MAX_RETRIES) break;
       const waitMs = 500 * 2 ** (attempt - 1);
       logVerbose(`ADO request threw (${String(e)}), retrying in ${waitMs}ms`);
       await new Promise((r) => setTimeout(r, waitMs));
+    } finally {
+      clearTimeout(timer);
     }
   }
   if (lastErr instanceof AdoError) throw lastErr;
@@ -209,25 +233,24 @@ function diagnose(e: unknown): string {
 }
 
 export async function adoGet<T>(url: string, opts: Omit<RequestOpts, "method" | "body"> = {}): Promise<T> {
-  const res = await request(url, { ...opts, method: "GET" });
-  return (await res.json()) as T;
+  const buf = await request(url, { ...opts, method: "GET" });
+  return JSON.parse(buf.toString("utf8")) as T;
 }
 
 // Blob content must be read as bytes: decoding through a local checkout or a
 // text-mode read would normalize CRLF/BOM and shift every anchor after it.
 export async function adoGetBytes(url: string, opts: Omit<RequestOpts, "method" | "body"> = {}): Promise<Buffer> {
-  const res = await request(url, { ...opts, method: "GET" });
-  return Buffer.from(await res.arrayBuffer());
+  return request(url, { ...opts, method: "GET" });
 }
 
 export async function adoPost<T>(url: string, body: unknown, opts: Omit<RequestOpts, "method" | "body"> = {}): Promise<T> {
-  const res = await request(url, { ...opts, method: "POST", body });
-  return (await res.json()) as T;
+  const buf = await request(url, { ...opts, method: "POST", body });
+  return JSON.parse(buf.toString("utf8")) as T;
 }
 
 export async function adoPatch<T>(url: string, body: unknown, opts: Omit<RequestOpts, "method" | "body"> = {}): Promise<T> {
-  const res = await request(url, { ...opts, method: "PATCH", body });
-  return (await res.json()) as T;
+  const buf = await request(url, { ...opts, method: "PATCH", body });
+  return JSON.parse(buf.toString("utf8")) as T;
 }
 
 export interface AdoList<T> {

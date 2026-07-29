@@ -1,7 +1,7 @@
 // Publishing: one sticky summary edited in place, plus inline threads for findings that
 // anchored. Re-runs recognise their own threads by fingerprint and never post the same
 // issue twice (the "re-review amnesia" failure mode).
-import { POST_STATUS, isDryRun } from "../config";
+import { POST_STATUS, isDryRun, BOT_MARKER } from "../config";
 import { createThread, listThreads, updateComment, type Thread } from "../ado/threads";
 import { postStatus } from "../ado/statuses";
 import { unmetCriteria } from "../gates/requirement";
@@ -28,6 +28,32 @@ function findSummaryThread(threads: Thread[]): { thread: Thread; commentId: numb
     if (c) return { thread: t, commentId: c.id };
   }
   return undefined;
+}
+
+/**
+ * Positions of our own still-active inline threads, for cross-run dedupe by location.
+ *
+ * The fingerprint is a hash of the model's free-text quote, and models do not reproduce
+ * quotes byte-for-byte across runs — one extra quoted line or a different category label
+ * makes a "new" fingerprint for the same issue on the same code. An active prloop thread
+ * already sitting on those lines is the stronger signal: whatever we would say there, we
+ * have already said.
+ */
+function postedPositions(threads: Thread[]): Array<{ file: string; start: number; end: number }> {
+  const out: Array<{ file: string; start: number; end: number }> = [];
+  for (const t of threads) {
+    if (t.status !== "active" && t.status !== "pending") continue;
+    const ctx = t.threadContext;
+    if (!ctx?.filePath || !ctx.rightFileStart?.line) continue;
+    const ours = t.comments?.some((c) => !c.isDeleted && (c.content ?? "").includes(BOT_MARKER));
+    if (!ours) continue;
+    out.push({
+      file: ctx.filePath.replace(/^\/+/, ""),
+      start: ctx.rightFileStart.line,
+      end: ctx.rightFileEnd?.line ?? ctx.rightFileStart.line,
+    });
+  }
+  return out;
 }
 
 function postedFingerprints(threads: Thread[]): Set<string> {
@@ -80,12 +106,27 @@ export async function publish(
     log(`Found ${result.dismissals.length} comments previously dismissed by a human (recorded for future exclusion rules)`);
   }
 
+  const positions = postedPositions(threads);
   for (const f of findings) {
     if (seen.has(f.fingerprint)) {
       result.alreadyPosted.push(f);
       continue;
     }
     if (!f.anchor) continue; // defensive: aggregate already filtered these out
+    // Location dedupe: an active prloop thread already covers these lines (right side only —
+    // left-side context isn't tracked here, and left-anchored comments are rare).
+    if (
+      f.anchor.side === "right" &&
+      positions.some(
+        (p) =>
+          p.file === f.file.replace(/^\/+/, "") &&
+          f.anchor!.startLine <= p.end &&
+          f.anchor!.endLine >= p.start,
+      )
+    ) {
+      result.alreadyPosted.push(f);
+      continue;
+    }
     try {
       await createThread(ref, {
         content: renderFindingComment(f),

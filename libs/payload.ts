@@ -1,6 +1,7 @@
 // Deterministic diff budgeting, after PR-Agent's compression strategy: sort by language
 // prevalence, prefer files with real additions, fit to a char budget, and name-list the
 // overflow rather than truncating mid-hunk.
+import { log } from "./log";
 import { MAX_DIFF_CHARS } from "../config";
 import { renderUnifiedDiff } from "./diff";
 import type { FileDiff } from "./types";
@@ -43,6 +44,15 @@ export function buildDiffPayload(files: FileDiff[], budget = MAX_DIFF_CHARS): Di
     if (used + rendered.length > budget && includedFiles.length > 0) {
       omittedFiles.push(f.path);
       continue;
+    }
+    // The first file is always included so the payload is never empty — but a single
+    // giant file can then blow far past the budget, and a backend that truncates the
+    // prompt corrupts the very quotes anchoring depends on. Say so out loud.
+    if (includedFiles.length === 0 && rendered.length > budget) {
+      log(
+        `[WARN] ${f.path} alone renders ${rendered.length} chars against a ${budget} budget; ` +
+          `sent anyway — if the backend truncates, anchoring will degrade`,
+      );
     }
     chunks.push(rendered);
     includedFiles.push(f.path);

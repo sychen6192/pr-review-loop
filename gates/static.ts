@@ -248,7 +248,13 @@ export async function triageAndConvert(
             return;
           }
           triaged++;
-          kept.push({ ...f, severity: v.severity ?? f.severity, message: v.reason || f.message });
+          // Same rule as the skeptic: a verifying model may lower severity, never raise
+          // it. The tool's own rating owns the ceiling.
+          const sev =
+            v.severity !== undefined && severityRank(v.severity) > severityRank(f.severity)
+              ? v.severity
+              : f.severity;
+          kept.push({ ...f, severity: sev, message: v.reason || f.message });
         });
         log(`static triage: ${batch.length} awaiting verdict → kept ${triaged}, filtered out ${batch.length - triaged}`);
       }

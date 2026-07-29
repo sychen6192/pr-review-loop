@@ -54,22 +54,32 @@ export interface SkepticPromptInput {
   category: string;
   severity: string;
   file: FileDiff;
+  // The anchor's coordinates live on this side; showing the other side's lines would have
+  // the skeptic judging code the claim is not about (and refuting it for that reason).
+  side: "right" | "left";
   startLine: number;
   endLine: number;
   contextLines: number;
 }
 
 export function buildSkepticPrompt(input: SkepticPromptInput): string {
-  const { file, startLine, endLine, contextLines } = input;
+  const { file, side, startLine, endLine, contextLines } = input;
+  const lines = side === "right" ? file.rightLines : file.leftLines;
   const from = Math.max(1, startLine - contextLines);
-  const to = Math.min(file.rightLines.length, endLine + contextLines);
+  const to = Math.min(lines.length, endLine + contextLines);
 
   const snippet: string[] = [];
   for (let l = from; l <= to; l++) {
     const marker = l >= startLine && l <= endLine ? ">" : " ";
-    const changed = file.changedRightLines.has(l) ? "+" : " ";
-    snippet.push(`${marker}${changed} ${String(l).padStart(4)} | ${file.rightLines[l - 1] ?? ""}`);
+    // "Changed by this PR" only exists as a concept on the right side.
+    const changed = side === "right" && file.changedRightLines.has(l) ? "+" : " ";
+    snippet.push(`${marker}${changed} ${String(l).padStart(4)} | ${lines[l - 1] ?? ""}`);
   }
+
+  const sideNote =
+    side === "left"
+      ? "\n\nNOTE: the accusation is about code REMOVED by this PR; the snippet shows the file BEFORE the change."
+      : "";
 
   return `## The alleged problem
 
@@ -81,7 +91,7 @@ export function buildSkepticPrompt(input: SkepticPromptInput): string {
 
 File: \`${file.path}\` (language: ${file.language})
 
-Line prefixes: \`>\` = the line the accusation points at, \`+\` = a line changed by this PR.
+Line prefixes: \`>\` = the line the accusation points at${side === "right" ? ", \`+\` = a line changed by this PR" : ""}.${sideNote}
 
 \`\`\`
 ${snippet.join("\n")}

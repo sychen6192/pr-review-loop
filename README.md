@@ -237,6 +237,12 @@ applyTo: "**/*.java"
 
 **先跑 `npx tsx scripts/doctor.ts '<PR URL>' --smoke`**，多數問題會直接指出修法。
 
+**憑證問題請直接跑 `tlsfix`**——它把所有可能的憑證來源實際連一次，告訴你哪個能用：
+
+```bash
+npx tsx scripts/tlsfix.ts '<PR URL>'
+```
+
 連不上而 doctor 說不清楚時，用 **probe** 直測：
 
 ```bash

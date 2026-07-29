@@ -12,6 +12,7 @@
     "check": "tsc --noEmit && tsx scripts/selftest.ts",
     "doctor": "tsx scripts/doctor.ts",
     "probe": "tsx scripts/probe.ts",
+    "tlsfix": "tsx scripts/tlsfix.ts",
     "setup": "tsx scripts/setup.ts",
     "demo": "tsx scripts/demo.ts"
   },

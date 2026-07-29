@@ -18,7 +18,9 @@ import { USER_AGENT, dispatcherFor } from "../libs/proxy";
 import type { ChatRequest, ChatResponse, ModelRunner } from "../libs/types";
 
 interface OpenAIChoice {
-  message?: { content?: string | null };
+  // `reasoning` is where thinking models put their chain of thought; the answer stays in
+  // `content`. It is never used as output, only to explain where the token budget went.
+  message?: { content?: string | null; reasoning?: string | null };
   finish_reason?: string;
 }
 /**
@@ -105,10 +107,17 @@ export class OpenAICompatRunner implements ModelRunner {
       if (parsed.error?.message) {
         return { text: "", model: req.model, error: parsed.error.message };
       }
-      const content = parsed.choices?.[0]?.message?.content ?? "";
+      const choice = parsed.choices?.[0];
+      const content = choice?.message?.content ?? "";
+      const reasoned = (choice?.message?.reasoning ?? "").length;
+
+      const bad = describeBadCompletion(choice, req.maxTokens ?? LLM_MAX_TOKENS);
+      if (bad) return { text: content, model: req.model, error: bad };
+
       const secs = Math.round((Date.now() - started) / 1000);
       logVerbose(
         `${req.model} replied ${content.length} chars, ${secs}s` +
+          (reasoned > 0 ? ` (+${reasoned} chars reasoning)` : "") +
           (parsed.usage ? ` (in ${parsed.usage.prompt_tokens ?? "?"} / out ${parsed.usage.completion_tokens ?? "?"} tokens)` : ""),
       );
       return {
@@ -139,6 +148,38 @@ export class OpenAICompatRunner implements ModelRunner {
  * wrong (bad schema, bad auth, unknown model) and retrying only wastes the endpoint's time.
  * 408 and 429 are the exceptions — those are about timing, not about the request.
  */
+/**
+ * Reports a completion that arrived successfully but is unusable, or undefined if it's fine.
+ *
+ * Truncation is a different failure from bad output and needs a different fix. Left
+ * unlabelled it surfaces downstream as "output unparseable", which sends people to inspect
+ * the prompt or the schema when the real answer is "raise the token limit".
+ *
+ * Thinking models make this the common case rather than an edge case: chain of thought is
+ * billed to the same budget as the answer. A measured run on a self-hosted qwen3.6:27b spent
+ * 7842 of 8192 tokens, most of it in `reasoning` — 4% of headroom away from silently
+ * returning zero findings.
+ */
+export function describeBadCompletion(
+  choice: { message?: { content?: string | null; reasoning?: string | null }; finish_reason?: string } | undefined,
+  maxTokens: number,
+): string | undefined {
+  const content = choice?.message?.content ?? "";
+  const reasoned = (choice?.message?.reasoning ?? "").length;
+  const reasoningNote =
+    reasoned > 0 ? `. The model emitted ${reasoned} chars of reasoning, billed to the same budget` : "";
+
+  if (choice?.finish_reason === "length") {
+    return `response truncated at the token limit (${maxTokens}); raise PRR_LLM_MAX_TOKENS${reasoningNote}`;
+  }
+  if (!content.trim()) {
+    return reasoned > 0
+      ? `model returned only reasoning (${reasoned} chars) and no answer; raise PRR_LLM_MAX_TOKENS`
+      : "model returned an empty response";
+  }
+  return undefined;
+}
+
 export function isTransientModelError(error: string): boolean {
   if (/^HTTP (4\d\d)/.test(error)) return /^HTTP (408|429)/.test(error);
   return true;

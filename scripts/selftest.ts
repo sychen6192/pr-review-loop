@@ -22,7 +22,7 @@ import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 import { load, sourcePaths } from "../libs/tls";
 import { Semaphore } from "../libs/limit";
-import { isTransientModelError } from "../models/runner";
+import { describeBadCompletion, isTransientModelError } from "../models/runner";
 import { anchorAndDedupe } from "../gates/aggregate";
 import type { FinderOutput } from "../gates/finder";
 import { FINDINGS_SCHEMA, REQUIREMENT_SCHEMA, TRIAGE_SCHEMA, VERDICT_SCHEMA } from "../models/schemas";
@@ -953,6 +953,27 @@ section("skeptic verdict semantics");
   check("a verdict without a refuted field is an error, not an answer", empty.error !== undefined);
   const good = parseVerdictForTest('{"refuted": false, "reason": "holds", "confidence": 0.8, "suggested_severity": null}', "m");
   check("null suggested_severity parses", good.error === undefined && good.suggestedSeverity === undefined);
+}
+
+section("unusable completions are named, not left to the JSON parser");
+{
+  const ok = { message: { content: '{"findings":[]}' }, finish_reason: "stop" };
+  check("a good completion passes", describeBadCompletion(ok, 8192) === undefined);
+
+  // Thinking models bill chain of thought to the same budget, so this is the common
+  // failure on a self-hosted reasoning model, not an edge case.
+  const cut = { message: { content: '{"findings":[{"file"', reasoning: "x".repeat(9000) }, finish_reason: "length" };
+  const cutMsg = describeBadCompletion(cut, 8192) ?? "";
+  check("truncation is reported as truncation", cutMsg.includes("truncated"));
+  check("...names the knob to turn", cutMsg.includes("PRR_LLM_MAX_TOKENS"));
+  check("...and blames the reasoning budget when there was reasoning", cutMsg.includes("reasoning"));
+
+  const allThought = { message: { content: "", reasoning: "x".repeat(500) }, finish_reason: "stop" };
+  check("reasoning-only response is named", (describeBadCompletion(allThought, 8192) ?? "").includes("only reasoning"));
+
+  const empty = { message: { content: "" }, finish_reason: "stop" };
+  check("plain empty response is named", (describeBadCompletion(empty, 8192) ?? "").includes("empty"));
+  check("missing choice is named", describeBadCompletion(undefined, 8192) !== undefined);
 }
 
 section("transient vs deterministic model failures");

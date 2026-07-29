@@ -303,20 +303,32 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
 
   // The certificates the server presented are exactly what needs trusting; writing them out
   // here removes the usual "go ask IT for the CA file" round trip.
-  if (loose.der.length > 0) {
+  // Only the authorities are useful here. When the server sends just the leaf — common with
+  // an intercepting proxy — there is nothing to export: trusting a leaf would work until the
+  // certificate rotates and hides the real fix, which is to trust the issuing CA.
+  const authorities = loose.der.slice(1);
+  if (authorities.length > 0) {
     const target = exportCaTo ?? path.join(PRLOOP_ROOT, "corporate-ca.pem");
-    // Skip the leaf: it is the site certificate, not an authority.
-    const authorities = loose.der.slice(1);
-    const pem = (authorities.length > 0 ? authorities : loose.der).map(derToPem).join("");
-    fs.writeFileSync(target, pem);
-    console.log(`  已將憑證鏈寫出到：${target}（${authorities.length || loose.der.length} 張）`);
+    fs.writeFileSync(target, authorities.map(derToPem).join(""));
+    console.log(`  已將上層授權憑證寫出到：${target}（${authorities.length} 張）`);
     console.log("");
     console.log("  接著這樣做：");
     console.log(`     export NODE_EXTRA_CA_CERTS=${target}`);
-    console.log(`     npx tsx scripts/probe.ts '<PR URL>'`);
     console.log("");
-    console.log("  ⚠️ 這份是從連線當下取得的，若中間人不是你信任的對象就不該採用。");
-    console.log("     正式使用建議改用 IT 提供的公司根 CA 檔案。");
+    console.log("  ⚠️ 這份是從連線當下取得的；正式使用建議改用 IT 提供的公司根 CA。");
+    console.log("");
+  } else if (loose.der.length > 0) {
+    const issuer = loose.chain[0]?.split("← 簽發者：")[1]?.trim() ?? "（未知）";
+    console.log(`  ⚠️ 對方只送出站台憑證，沒有附上簽發它的 CA，因此沒有可匯出的憑證。`);
+    console.log(`     簽發者是「${issuer}」——你需要的是「這一張 CA」，不是站台憑證本身。`);
+    console.log("     （把站台憑證當 CA 用，會在憑證輪替時失效，並掩蓋真正的問題。）");
+    console.log("");
+    console.log(`  取得方式：${systemCaAdvice()}`);
+    console.log("     或向 IT 索取該 CA 的 .pem / .crt。");
+    console.log("");
+    console.log("  想確認它是否已在系統信任存放區裡：");
+    console.log(`     awk '/BEGIN/{c=""} {c=c $0 RS} /END/{print c | "openssl x509 -noout -subject"; close("openssl x509 -noout -subject")}' \\`);
+    console.log(`       /etc/ssl/certs/ca-certificates.crt | grep -i "${issuer.split(".")[0] || "corp"}"`);
     console.log("");
   }
   if (/CERT_|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(strict.code ?? strict.err ?? "")) {

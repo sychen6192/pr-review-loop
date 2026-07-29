@@ -275,11 +275,21 @@ npx tsx scripts/probe.ts '<PR URL>'
   `npx tsx scripts/probe.ts '<PR URL>'` 的「TLS 握手」那一節會把伺服器實際出示的
   憑證鏈印出來。若最末端的簽發者不是公開 CA（Microsoft、DigiCert 之類），就確定是攔截。
 
-  解法是把該 CA 指給 Node：
+  **最快的解法**是讓 probe 自己把憑證抓出來：
+
   ```bash
-  export NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem
+  npx tsx scripts/probe.ts '<PR URL>' --export-ca ./corporate-ca.pem
+  export NODE_EXTRA_CA_CERTS=$PWD/corporate-ca.pem
   ```
-  憑證檔向 IT 索取，或自行匯出（probe 會印出完整指令）。
+
+  驗證失敗時 probe 會把伺服器實際出示的憑證鏈寫成 PEM，省去跟 IT 要檔案的來回。
+  ⚠️ 這份是從連線當下取得的——若攔截你的不是你信任的對象就不該採用；正式使用
+  建議改用 IT 提供的公司根 CA。
+
+  其他做法：
+  - Linux 上系統憑證包通常已含公司 CA：`export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt`
+  - Node 22.15+ / 23.5+ 有 `--use-system-ca`，但**這個旗標不能放進 `NODE_OPTIONS`**，
+    所以搭配 `npx tsx` 用不了，只能直接 `node --use-system-ca`。
 
   確認用途可以暫時 `NODE_TLS_REJECT_UNAUTHORIZED=0`，但**不要留著**——那會關閉所有
   憑證驗證，等於接受任何中間人。確認完立刻改回 `NODE_EXTRA_CA_CERTS`。

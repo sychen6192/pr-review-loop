@@ -2,3 +2,7 @@ node_modules/
 runs/
 .env
 *.log
+
+# probe --export-ca 產生的憑證，屬環境專屬不進版控
+corporate-ca.pem
+*.pem

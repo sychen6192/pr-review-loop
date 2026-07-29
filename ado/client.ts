@@ -5,7 +5,7 @@ import { ADO_API_VERSION, ADO_BASE_URL, ADO_MAX_RETRIES, ADO_TIMEOUT_MS } from "
 import { logVerbose } from "../libs/log";
 import type { PrRef } from "../libs/types";
 import { authHeader } from "./auth";
-import { dispatcherFor } from "../libs/proxy";
+import { USER_AGENT, dispatcherFor } from "../libs/proxy";
 
 export class AdoError extends Error {
   constructor(
@@ -107,6 +107,7 @@ async function request(url: string, opts: RequestOpts = {}): Promise<Response> {
   const headers: Record<string, string> = {
     Authorization: await authHeader(),
     Accept: opts.accept ?? "application/json",
+    "User-Agent": USER_AGENT,
   };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
 
@@ -187,6 +188,12 @@ function diagnose(e: unknown): string {
   }
   if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(all)) {
     return "DNS 查不到這個主機。確認網址正確，且這台機器連得到內網（VPN？）";
+  }
+  if (/403/.test(all) && /proxy|CONNECT|tunnel/i.test(all)) {
+    return (
+      "proxy 拒絕放行。若 git 對同一主機是通的，多半是 proxy 依 User-Agent 過濾——" +
+      `prloop 預設送出「${USER_AGENT}」，可用 PRR_USER_AGENT 調整`
+    );
   }
   if (/ECONNREFUSED/i.test(all)) {
     return (

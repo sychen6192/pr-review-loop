@@ -192,7 +192,20 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
           if (/ 200 /.test(head)) resolve({ sock: s });
           else {
             s.destroy();
-            resolve({ err: `proxy 拒絕 CONNECT：${head}` });
+            // A refusal here is network policy, not TLS and not credentials: the proxy
+            // decided before any certificate or token was ever exchanged.
+            const code = /\s(\d{3})\s/.exec(head)?.[1] ?? "";
+            let why = "";
+            if (code === "403") {
+              why =
+                "proxy 政策不允許連往這個主機。這與憑證、PAT 都無關——" +
+                "proxy 在任何憑證或 token 交換之前就擋掉了";
+            } else if (code === "407") {
+              why = "proxy 要求認證。改用 http://使用者:密碼@主機:埠 的形式設定 HTTPS_PROXY";
+            } else if (code === "502" || code === "504") {
+              why = "proxy 連不到目標主機";
+            }
+            resolve({ err: `proxy 拒絕 CONNECT：${head}${why ? `\n     → ${why}` : ""}` });
           }
         });
       });
@@ -259,7 +272,15 @@ async function probeTls(host: string, port: number, exportCaTo?: string): Promis
   if (!loose.ok) {
     console.log(`  連 TCP/TLS 都建立不起來：${loose.err}`);
     if (proxy) {
-      console.log("  → 已嘗試經由 proxy，仍連不上。確認 proxy 位址正確、且允許連往這個主機。");
+      console.log("  → 已嘗試經由 proxy，仍連不上。");
+      if (/403/.test(loose.err ?? "")) {
+        console.log("");
+        console.log("  proxy 拒絕放行時，最有用的線索是「你的 git 是怎麼通的」——");
+        console.log("  既然能對 Azure Repos 推拉程式碼，就存在一條可用路由：");
+        console.log("     git config --global --get https.proxy    # 與 HTTPS_PROXY 不同就改用它");
+        console.log("     若 git 沒設 proxy 卻能通，代表該直連：");
+        console.log(`     export NO_PROXY=${host},localhost,127.0.0.1`);
+      }
     } else {
       console.log(
         "  → 這不是憑證問題，是網路不通。若這台機器只能透過公司 proxy 對外，" +

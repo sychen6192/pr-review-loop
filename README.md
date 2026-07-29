@@ -268,6 +268,13 @@ npx tsx scripts/probe.ts '<PR URL>'
 
   `probe` 的第 1 節會顯示目前的 proxy 設定，第 4 節會標明是直連還是經由 proxy——
   有 proxy 時 TLS 檢測會走 CONNECT 隧道，不會把防火牆的拒絕誤判成憑證問題。
+- **`proxy 拒絕 CONNECT：... 403`。** proxy 政策不允許連往該主機。這與憑證、PAT
+  都無關——proxy 在任何憑證或 token 交換之前就擋掉了。
+
+  最有用的線索是**你的 git 是怎麼通的**:既然能對 Azure Repos 推拉程式碼，就存在
+  一條可用路由。`git config --global --get https.proxy` 若與 `HTTPS_PROXY` 不同就改用它；
+  git 沒設 proxy 卻能通，代表該主機應直連，把它加進 `NO_PROXY`。
+  回 `407` 則是 proxy 要求認證，改用 `http://使用者:密碼@主機:埠`。
 - **TLS 憑證錯誤（企業 TLS 攔截）。** 瀏覽器能開但工具連不上，幾乎都是這個。
   **Node 有自己內建的 CA 清單，不讀作業系統的信任存放區**——所以公司的攔截設備
   （Zscaler、Blue Coat 等）重簽的憑證，瀏覽器接受、Node 不接受。

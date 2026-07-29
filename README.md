@@ -185,6 +185,7 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_SKEPTIC_ROUNDS` | `1` | 3 gives a majority vote worth the name |
 | `PRR_LLM_CONCURRENCY` | `6` | in-flight model calls across all stages; match your endpoint's batch size |
 | `PRR_LLM_RETRIES` | `1` | retries on transient model failures (never on 4xx) |
+| `PRR_LLM_MAX_TOKENS` | `8192` | **raise to 16384+ for thinking models** — reasoning is billed to this budget |
 | `PRR_MIN_INLINE_SEVERITY` | `medium` | below this → summary only |
 | `PRR_MAX_INLINE_COMMENTS` | `10` | code axis (requirement axis has its own budget of 3) |
 | `PRR_REQUIRE_CORROBORATION` | `1` | `0` publishes unverified single-source findings |
@@ -192,6 +193,16 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_TRIAGE_MODEL` | — | unset = high-FP tool findings are dropped |
 | `PRR_CA_CERTS` | — | CA bundle for TLS-intercepting networks (comma-separated) |
 | `PRR_DRY_RUN` | — | `1` = compute, publish nothing |
+
+**Thinking models** bill their chain of thought against `max_tokens`, so the default 8192 is
+not enough: a measured finder call on a self-hosted `qwen3.6:27b` used 7.8k completion tokens
+with ~24k characters of reasoning behind them. Overrun is reported as
+`response truncated at the token limit`, not as unparseable output — those need different fixes.
+
+**Single-GPU / one-model-at-a-time backends** (a plain Ollama host) need
+`PRR_LLM_CONCURRENCY=1`. The finder fan-out otherwise interleaves requests for different
+models and the backend thrashes, evicting and reloading between calls. At 1, each model is
+loaded exactly once per run.
 
 **Runner** — `PRR_RUNNER=openai` (default) talks HTTP directly and supports **guided
 decoding**, where the engine enforces the JSON schema at the token level. That is what keeps

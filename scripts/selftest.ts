@@ -22,6 +22,7 @@ import type { AnchoredFinding, FileDiff, RawFinding } from "../libs/types";
 import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 import { load, sourcePaths } from "../libs/tls";
 import { Semaphore } from "../libs/limit";
+import { isTransientModelError } from "../models/runner";
 import { anchorAndDedupe } from "../gates/aggregate";
 import type { FinderOutput } from "../gates/finder";
 import { FINDINGS_SCHEMA, REQUIREMENT_SCHEMA, TRIAGE_SCHEMA, VERDICT_SCHEMA } from "../models/schemas";
@@ -952,6 +953,23 @@ section("skeptic verdict semantics");
   check("a verdict without a refuted field is an error, not an answer", empty.error !== undefined);
   const good = parseVerdictForTest('{"refuted": false, "reason": "holds", "confidence": 0.8, "suggested_severity": null}', "m");
   check("null suggested_severity parses", good.error === undefined && good.suggestedSeverity === undefined);
+}
+
+section("transient vs deterministic model failures");
+{
+  // Retrying a schema/auth rejection just burns endpoint time; retrying a timeout is free
+  // recall. The live failure that motivated this was an HTTP 400 (never retry) sitting next
+  // to timeouts (always retry) in the same run.
+  check("timeout retries", isTransientModelError("timeout (180s)"));
+  check("socket error retries", isTransientModelError("TypeError: fetch failed [UND_ERR_SOCKET]"));
+  check("500 retries", isTransientModelError("HTTP 500: upstream unavailable"));
+  check("502 retries", isTransientModelError("HTTP 502: bad gateway"));
+  check("429 retries", isTransientModelError("HTTP 429: rate limited"));
+  check("408 retries", isTransientModelError("HTTP 408: request timeout"));
+  check("400 does NOT retry", !isTransientModelError("HTTP 400: Invalid schema for response_format"));
+  check("401 does NOT retry", !isTransientModelError("HTTP 401: unauthorized"));
+  check("404 does NOT retry", !isTransientModelError("HTTP 404: model not found"));
+  check("unparseable output does NOT reach here as HTTP", isTransientModelError("response is not JSON: <html>"));
 }
 
 section("model call concurrency cap");

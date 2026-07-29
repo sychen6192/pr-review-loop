@@ -27,6 +27,12 @@ export interface ReviewRunResult {
   publishResult?: PublishResult;
   runDir: string;
   durationSec: number;
+  /**
+   * Stages that failed outright. A crashed gate must not be reported as a clean gate:
+   * without this, a requirement axis that died and a requirement axis that passed produce
+   * the same exit code, and a CI check goes green on an unverified PR.
+   */
+  incomplete: string[];
 }
 
 export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult> {
@@ -66,13 +72,37 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       reqFindings: [],
       runDir: run.dir,
       durationSec: Math.round((Date.now() - started) / 1000),
+      incomplete: [],
     };
   }
 
   // The two axes run concurrently and blind to each other: neither model sees the other's
   // output, so "the code is clean" can't excuse a missing requirement, or vice versa.
   banner("Step 2/4: static analysis, requirement axis and code axis");
-  const [staticResult, reqOut, finderOut] = await Promise.all([
+
+  // The requirement axis is deliberately NOT part of the barrier below. Its output is only
+  // needed at publish time, and the gate is non-fatal by design — so letting it hold the
+  // pipeline is all cost and no benefit. On a real run its model call ran 300s past the
+  // finders and step 3 sat idle the whole time; with a long timeout that idle window is the
+  // full timeout. It runs in the background and is collected just before publishing.
+  const reqPromise = (
+    SKIP_REQUIREMENT
+      ? Promise.resolve<Awaited<ReturnType<typeof runRequirementGate>>>({
+          result: {
+            workItems: [],
+            criteria: [],
+            extras: [],
+            skipped: "requirement check skipped by config",
+          },
+        })
+      : runRequirementGate({ ref: opts.ref, pr: ctx.pr, files: ctx.files, runner: opts.runner })
+  ).catch((e): Awaited<ReturnType<typeof runRequirementGate>> => {
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`[FAIL] requirement axis threw: ${msg}`);
+    return { result: { workItems: [], criteria: [], extras: [], error: msg } };
+  });
+
+  const [staticResult, finderOut] = await Promise.all([
     SKIP_STATIC
       ? Promise.resolve<StaticResult>({
           facts: [],
@@ -83,16 +113,6 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
           skippedReason: "static analysis skipped by config",
         })
       : runStaticGate(ctx.files),
-    SKIP_REQUIREMENT
-      ? Promise.resolve<Awaited<ReturnType<typeof runRequirementGate>>>({
-          result: {
-            workItems: [],
-            criteria: [],
-            extras: [],
-            skipped: "requirement check skipped by config",
-          },
-        })
-      : runRequirementGate({ ref: opts.ref, pr: ctx.pr, files: ctx.files, runner: opts.runner }),
     runFinders(opts.runner, {
       pr: ctx.pr,
       files: ctx.files,
@@ -103,11 +123,6 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
 
   if (staticResult.skippedReason) log(`Static analysis: ${staticResult.skippedReason}`);
   run.saveJson("static.json", staticResult);
-
-  const req = reqOut.result;
-  if (reqOut.prompt) run.save("requirement-prompt.md", reqOut.prompt);
-  if (reqOut.raw) run.save("requirement-raw.txt", reqOut.raw);
-  run.saveJson("requirement.json", req);
 
   const { outputs, prompt, omitted, rules } = finderOut;
   run.save("finder-prompt.md", prompt);
@@ -140,6 +155,14 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   run.saveJson("static-findings.json", toolOut);
 
   const agg = finalize(candidates, mergeToolFindings(survivors, toolOut.findings));
+
+  // Collect the requirement axis now — everything that could run without it has run.
+  const reqOut = await reqPromise;
+  const req = reqOut.result;
+  if (reqOut.prompt) run.save("requirement-prompt.md", reqOut.prompt);
+  if (reqOut.raw) run.save("requirement-raw.txt", reqOut.raw);
+  run.saveJson("requirement.json", req);
+
   const reqFindings = toRequirementFindings(req, ctx.files);
   // Attach the tracking id ADO needs for each thread to survive future pushes.
   for (const f of [...agg.inline, ...reqFindings]) {
@@ -183,5 +206,14 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     dismissals: publishResult.dismissals,
   });
 
-  return { ctx, agg, req, reqFindings, publishResult, runDir: run.dir, durationSec };
+  const incomplete: string[] = [];
+  if (req.error) incomplete.push(`requirement axis (${req.error})`);
+  for (const e of finderErrors) incomplete.push(`finder ${e.model} (${e.error})`);
+  const deadSkeptics = outcomes.reduce(
+    (n, o) => n + (o.verdicts.length > 0 && o.verdicts.every((v) => v.error) ? 1 : 0),
+    0,
+  );
+  if (deadSkeptics > 0) incomplete.push(`${deadSkeptics} findings whose verifier failed`);
+
+  return { ctx, agg, req, reqFindings, publishResult, runDir: run.dir, durationSec, incomplete };
 }

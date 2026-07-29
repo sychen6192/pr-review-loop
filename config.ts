@@ -70,6 +70,12 @@ export const LLM_TIMEOUT_MS = Number(process.env.PRR_LLM_TIMEOUT_MS ?? 900_000);
 // anchored finding, so an uncapped run can put dozens of requests on a self-hosted endpoint
 // simultaneously; they then queue in the engine while their own timeouts run down. 0 = no cap.
 export const LLM_CONCURRENCY = Number(process.env.PRR_LLM_CONCURRENCY ?? 6);
+// Extra attempts for a model call that failed for a TRANSIENT reason (timeout, socket
+// error, 429, 5xx). Inference is a read-only operation, so a retry is always safe. A 4xx
+// schema or auth rejection is deterministic and is never retried. 0 disables.
+// Without this, one flaky verifier call silently deletes an inline comment: its finding
+// stays single-source, fails the corroboration gate, and drops to the summary.
+export const LLM_RETRIES = Number(process.env.PRR_LLM_RETRIES ?? 1);
 // M1 runs a single finder; M3 turns this into a comma-separated heterogeneous fleet.
 export const FINDER_MODELS = (process.env.PRR_FINDER_MODELS ?? "qwen3-coder")
   .split(",")

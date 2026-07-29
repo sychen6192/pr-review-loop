@@ -29,6 +29,8 @@ Options:
   --dry-run             compute everything, post nothing
   -h, --help            show this help
 
+Exit codes: 0 clean | 2 blocking findings | 3 review incomplete (a stage failed) | 1 fatal
+
 Env vars: see .env.example`);
   process.exit(1);
 }
@@ -102,7 +104,17 @@ async function main() {
 
   // Either axis can fail the run: an unimplemented requirement is as blocking as a bug.
   const highRisk = inline.filter((f) => f.severity === "critical" || f.severity === "high");
-  process.exit(highRisk.length > 0 || unmet.length > 0 ? 2 : 0);
+  if (highRisk.length > 0 || unmet.length > 0) process.exit(2);
+
+  // A stage that crashed must not exit 0. "Nothing blocking was found" and "the check that
+  // would have found it never ran" are different facts, and only one of them justifies a
+  // green CI gate.
+  if (result.incomplete.length > 0) {
+    log(`[WARN] Review incomplete — ${result.incomplete.join("; ")}`);
+    log("Exiting 3: no blocking findings, but the review did not fully run");
+    process.exit(3);
+  }
+  process.exit(0);
 }
 
 main().catch((e) => {

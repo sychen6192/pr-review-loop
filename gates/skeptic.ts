@@ -125,10 +125,22 @@ export async function runSkeptic(
 
   const outcomes = await Promise.all(jobs);
   const killed = outcomes.filter((o) => o.killed).length;
+  // A finding every one of whose verifiers errored was NOT verified. Reporting it inside
+  // "verified N" is a lie that costs the reader the one fact they need: an unverified
+  // single-source finding cannot be published, so a dead verifier silently deletes a comment.
+  const unverified = outcomes.filter((o) => o.verdicts.length > 0 && o.verdicts.every((v) => v.error));
   log(
-    `skeptic: verified ${outcomes.length}, refuted ${killed}, kept ${outcomes.length - killed}` +
+    `skeptic: verified ${outcomes.length - unverified.length}, refuted ${killed}, ` +
+      `kept ${outcomes.length - killed}` +
       ` (${SKEPTIC_ROUNDS} rounds each, models ${SKEPTIC_MODELS.join(", ")})`,
   );
+  if (unverified.length > 0) {
+    log(
+      `[WARN] ${unverified.length} findings could not be verified — every verifier call failed. ` +
+        `Single-source findings among them cannot be published. First error: ` +
+        `${unverified[0]!.verdicts.find((v) => v.error)?.error?.slice(0, 200) ?? ""}`,
+    );
+  }
   for (const o of outcomes) {
     if (!o.killed) continue;
     const why = o.verdicts.find((v) => v.refuted)?.reason ?? "";

@@ -1,7 +1,7 @@
 // The single deterministic control flow. Models are called at exactly one point (the finder
 // stage); every other decision — what to review, where a finding lives, what gets posted —
 // is made by code here (design principle: the loop never hands control to a model).
-import { LEARN_FROM_DISMISSALS, SKIP_REQUIREMENT, SKIP_STATIC, excludedCategories } from "./config";
+import { LEARN_FROM_DISMISSALS, SKIP_REQUIREMENT, SKIP_STATIC, excludedCategories, isDryRun } from "./config";
 import { buildReviewContext, type ReviewContext } from "./ado/intake";
 import { anchorAndDedupe, finalize, mergeToolFindings, type AggregateResult } from "./gates/aggregate";
 import { runFinders } from "./gates/finder";
@@ -9,6 +9,7 @@ import { runRequirementGate, toRequirementFindings } from "./gates/requirement";
 import { applyVerdicts, runSkeptic } from "./gates/skeptic";
 import { runStaticGate, triageAndConvert, type StaticResult } from "./gates/static";
 import { createRunDir } from "./libs/artifacts";
+import { tokenTotals } from "./models/runner";
 import { dismissedCategoryHints, loadDismissals } from "./libs/learnings";
 import { banner, log } from "./libs/log";
 import type { AnchoredFinding, ModelRunner, PrRef, RequirementResult } from "./libs/types";
@@ -60,21 +61,45 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   });
 
   if (ctx.files.length === 0) {
-    log("No reviewable code changes, exiting");
+    // Still publish: the sticky summary is what carries the iteration marker forward and
+    // what resolves stale threads. Skipping it wedged `--since auto` forever on a
+    // docs-only push, and left threads open whose code the push had deleted.
+    log("No reviewable code changes — publishing summary only");
     const agg: AggregateResult = {
       inline: [],
       belowBar: [],
       degraded: [],
-      stats: { raw: 0, afterDedupe: 0, anchored: 0, survived: 0, inline: 0, byFailure: {}, excluded: 0, dismissed: 0 },
+      stats: { raw: 0, afterDedupe: 0, anchored: 0, survived: 0, refuted: 0, inline: 0, byFailure: {}, excluded: 0, dismissed: 0 },
     };
-    return {
-      ctx,
-      agg,
-      reqFindings: [],
-      runDir: run.dir,
-      durationSec: Math.round((Date.now() - started) / 1000),
-      incomplete: [],
-    };
+    const durationSec = Math.round((Date.now() - started) / 1000);
+    const publishResult = await publish(
+      opts.ref,
+      { requirement: [], code: [] },
+      {
+        ctx,
+        agg,
+        req: { workItems: [], criteria: [], extras: [], skipped: "no reviewable code changes" },
+        finderErrors: [],
+        omittedFiles: [],
+        appliedRules: [],
+        staticResult: {
+          facts: [],
+          needsTriage: [],
+          suppressedCount: 0,
+          ranTools: [],
+          skipped: [],
+          skippedReason: "no reviewable code changes",
+        },
+        dismissalHints: [],
+        durationSec,
+        runDir: run.dir,
+      },
+    );
+    const incomplete: string[] = [];
+    if (publishResult.summaryThreadId === undefined && !isDryRun()) {
+      incomplete.push("summary comment failed to post");
+    }
+    return { ctx, agg, reqFindings: [], publishResult, runDir: run.dir, durationSec, incomplete };
   }
 
   // The two axes run concurrently and blind to each other: neither model sees the other's
@@ -103,8 +128,11 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     return { result: { workItems: [], criteria: [], extras: [], error: msg } };
   });
 
+  // Stages that threw outright (vs returning their own error fields); reported as
+  // incomplete so the run exits 3 instead of pretending the stage passed.
+  const stageFailures: string[] = [];
   const [staticResult, finderOut] = await Promise.all([
-    SKIP_STATIC
+    (SKIP_STATIC
       ? Promise.resolve<StaticResult>({
           facts: [],
           needsTriage: [],
@@ -113,12 +141,19 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
           skipped: [],
           skippedReason: "static analysis skipped by config",
         })
-      : runStaticGate(ctx.files),
+      : runStaticGate(ctx.files)
+    ).catch((e): StaticResult => {
+      stageFailures.push(`static gate (${e instanceof Error ? e.message : String(e)})`);
+      return { facts: [], needsTriage: [], suppressedCount: 0, ranTools: [], skipped: [], skippedReason: "crashed" };
+    }),
     runFinders(opts.runner, {
       pr: ctx.pr,
       files: ctx.files,
       iterationId: ctx.iteration.id,
       compareTo: ctx.compareTo,
+    }).catch((e): Awaited<ReturnType<typeof runFinders>> => {
+      stageFailures.push(`finder stage (${e instanceof Error ? e.message : String(e)})`);
+      return { outputs: [], prompt: "", omitted: [], rules: [] };
     }),
   ]);
 
@@ -144,8 +179,15 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
   const knownDismissed = candidates.merged.filter((f) => dismissedFps.has(f.fingerprint));
 
   // Adversarial verification. The finder ran in coverage mode and is expected to
-  // over-report; this is the stage that does the killing.
-  const outcomes = await runSkeptic(opts.runner, freshCandidates, ctx.files);
+  // over-report; this is the stage that does the killing. A skeptic stage that throws must
+  // degrade to "nothing verified" (recorded as incomplete below), not abort a run that has
+  // already paid for its finder calls.
+  const outcomes = await runSkeptic(opts.runner, freshCandidates, ctx.files).catch(
+    (e): import("./gates/skeptic").SkepticOutcome[] => {
+      stageFailures.push(`skeptic stage (${e instanceof Error ? e.message : String(e)})`);
+      return freshCandidates.map((f) => ({ finding: f, verdicts: [], killed: false }));
+    },
+  );
   const survivors = applyVerdicts(outcomes);
   run.saveJson(
     "skeptic.json",
@@ -155,12 +197,18 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       claim: o.finding.claim,
       killed: o.killed,
       verdicts: o.verdicts,
+      // The prompt is the audit trail for a wrong refutation — without it, a killed real
+      // finding cannot be debugged.
+      prompt: o.prompt,
     })),
   );
 
   // Tool findings join the code axis after triage. They carry real line numbers, so they
   // skip anchoring, and a deterministic tool counts as its own corroboration.
-  const toolOut = await triageAndConvert(opts.runner, staticResult, ctx.files);
+  const toolOut = await triageAndConvert(opts.runner, staticResult, ctx.files).catch((e) => {
+    stageFailures.push(`triage stage (${e instanceof Error ? e.message : String(e)})`);
+    return { findings: [], triaged: 0, dropped: 0, excluded: 0 };
+  });
   run.saveJson("static-findings.json", toolOut);
 
   // knownDismissed re-enters here so finalize can route it into the summary with its
@@ -169,6 +217,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     candidates,
     mergeToolFindings([...survivors, ...knownDismissed], toolOut.findings),
     dismissedFps,
+    outcomes.filter((o) => o.killed).length,
   );
 
   // Collect the requirement axis now — everything that could run without it has run.
@@ -213,6 +262,8 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
       runDir: run.dir,
     },
   );
+  const tokens = tokenTotals();
+  log(`model usage: ${tokens.calls} calls, ${tokens.promptTokens} in / ${tokens.completionTokens} out tokens`);
   run.saveJson("publish.json", {
     summaryThreadId: publishResult.summaryThreadId,
     posted: publishResult.posted.map((f) => ({ fp: f.fingerprint, file: f.file, line: f.anchor?.startLine })),
@@ -220,9 +271,10 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     failed: publishResult.failed.map((x) => ({ fp: x.finding.fingerprint, error: x.error })),
     resolved: publishResult.resolved,
     dismissals: publishResult.dismissals,
+    tokenUsage: tokens,
   });
 
-  const incomplete: string[] = [];
+  const incomplete: string[] = [...stageFailures];
   if (req.error) incomplete.push(`requirement axis (${req.error})`);
   for (const e of finderErrors) incomplete.push(`finder ${e.model} (${e.error})`);
   const deadSkeptics = outcomes.reduce(
@@ -230,6 +282,13 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
     0,
   );
   if (deadSkeptics > 0) incomplete.push(`${deadSkeptics} findings whose verifier failed`);
+  // A run that computed findings and could not post them must not look like a clean PR.
+  if (publishResult.failed.length > 0) {
+    incomplete.push(`${publishResult.failed.length} comments failed to post`);
+  }
+  if (publishResult.summaryThreadId === undefined && !isDryRun()) {
+    incomplete.push("summary comment failed to post");
+  }
 
   return { ctx, agg, req, reqFindings, publishResult, runDir: run.dir, durationSec, incomplete };
 }

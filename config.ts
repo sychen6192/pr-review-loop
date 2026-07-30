@@ -27,12 +27,37 @@ export const PRLOOP_ROOT = __dirname;
   }
 })();
 
+
+// Numeric env vars fail fast on garbage. `Number("ten")` is NaN, and NaN silently
+// disables whatever it configures: a NaN comment cap slices zero comments, a NaN
+// skeptic-rounds spawns zero verifiers, and nothing ever says why. Exiting with the
+// variable's name beats both.
+export function numEnv(name: string, def: number, min = 0): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < min) {
+    console.error(`FATAL: ${name}=${raw} is not a valid number (must be >= ${min})`);
+    process.exit(1);
+  }
+  return n;
+}
+
+export function enumEnv<T extends string>(name: string, def: T, allowed: readonly T[]): T {
+  const raw = (process.env[name] ?? def) as T;
+  if (!allowed.includes(raw)) {
+    console.error(`FATAL: ${name}=${raw} is not one of: ${allowed.join(", ")}`);
+    process.exit(1);
+  }
+  return raw;
+}
+
 // --- Azure DevOps ---
 // PAT with vso.code_write (threads) + vso.work (work items). In a pipeline you can
 // instead pass $(System.AccessToken); both go into the same Basic auth header.
 export const ADO_PAT = process.env.PRR_ADO_PAT ?? process.env.SYSTEM_ACCESSTOKEN ?? "";
 // auto = use a PAT if configured, otherwise mint a token via the az CLI.
-export const ADO_AUTH_MODE = (process.env.PRR_AUTH_MODE ?? "auto") as "auto" | "pat" | "azcli";
+export const ADO_AUTH_MODE = enumEnv("PRR_AUTH_MODE", "auto", ["auto", "pat", "azcli"] as const);
 export const AZ_BIN = process.env.PRR_AZ_BIN ?? "az";
 // CA bundle(s) to trust, for networks with TLS interception. Comma-separated; a root and
 // its intermediate often arrive as separate files. Loaded by libs/tls.ts and attached to
@@ -44,15 +69,17 @@ export const CA_CERTS = process.env.PRR_CA_CERTS ?? "";
 // collection). Set this only when the API host differs from the browser host.
 export const ADO_BASE_URL = process.env.PRR_ADO_BASE_URL ?? "";
 export const ADO_API_VERSION = process.env.PRR_ADO_API_VERSION ?? "7.1";
-export const ADO_TIMEOUT_MS = Number(process.env.PRR_ADO_TIMEOUT_MS ?? 60_000);
-export const ADO_MAX_RETRIES = Number(process.env.PRR_ADO_MAX_RETRIES ?? 3);
+export const ADO_TIMEOUT_MS = numEnv("PRR_ADO_TIMEOUT_MS", 60_000, 1000);
+export const ADO_MAX_RETRIES = numEnv("PRR_ADO_MAX_RETRIES", 3, 1);
+// Blob fetches in flight at once during intake (ADO rate-limits aggressive parallelism).
+export const ADO_CONCURRENCY = numEnv("PRR_ADO_CONCURRENCY", 6, 1);
 
 // --- Runner ---
 // openai   = direct HTTP to an OpenAI-compatible endpoint. Supports engine-level guided
 //            decoding (vLLM/xgrammar), which is what makes weak models emit valid JSON.
 // opencode = drive models through the opencode CLI, inheriting its provider config.
 //            NOTE: response_format is not passed through, so schemas are prompt-level only.
-export const RUNNER_KIND = (process.env.PRR_RUNNER ?? "openai") as "openai" | "opencode";
+export const RUNNER_KIND = enumEnv("PRR_RUNNER", "openai", ["openai", "opencode"] as const);
 export const OPENCODE_BIN = process.env.PRR_OPENCODE_BIN ?? "opencode";
 // The agent definition prloop drives. Installed by `npm run setup`; must have every tool
 // disabled — the review context is fully injected, and there is no local checkout to read.
@@ -60,22 +87,22 @@ export const OPENCODE_AGENT = process.env.PRR_OPENCODE_AGENT ?? "prloop-reviewer
 // 0 = drop --format json (fallback for opencode builds without JSONL events; loses tracing).
 export const OPENCODE_JSON_EVENTS = process.env.PRR_OPENCODE_JSON !== "0";
 // Wall-clock timeout for one opencode session.
-export const AGENT_TIMEOUT_MS = Number(process.env.PRR_AGENT_TIMEOUT_MS ?? 15 * 60 * 1000);
+export const AGENT_TIMEOUT_MS = numEnv("PRR_AGENT_TIMEOUT_MS", 15 * 60 * 1000, 1000);
 
 // --- Model access (OpenAI-compatible: LiteLLM proxy, vLLM, Ollama /v1) ---
 export const LLM_BASE_URL = process.env.PRR_LLM_BASE_URL ?? "http://localhost:4000/v1";
 export const LLM_API_KEY = process.env.PRR_LLM_API_KEY ?? "dummy";
-export const LLM_TIMEOUT_MS = Number(process.env.PRR_LLM_TIMEOUT_MS ?? 900_000);
+export const LLM_TIMEOUT_MS = numEnv("PRR_LLM_TIMEOUT_MS", 900_000, 1000);
 // Model calls in flight at once, across every stage. The skeptic fans out over every
 // anchored finding, so an uncapped run can put dozens of requests on a self-hosted endpoint
 // simultaneously; they then queue in the engine while their own timeouts run down. 0 = no cap.
-export const LLM_CONCURRENCY = Number(process.env.PRR_LLM_CONCURRENCY ?? 6);
+export const LLM_CONCURRENCY = numEnv("PRR_LLM_CONCURRENCY", 6);
 // Extra attempts for a model call that failed for a TRANSIENT reason (timeout, socket
 // error, 429, 5xx). Inference is a read-only operation, so a retry is always safe. A 4xx
 // schema or auth rejection is deterministic and is never retried. 0 disables.
 // Without this, one flaky verifier call silently deletes an inline comment: its finding
 // stays single-source, fails the corroboration gate, and drops to the summary.
-export const LLM_RETRIES = Number(process.env.PRR_LLM_RETRIES ?? 1);
+export const LLM_RETRIES = numEnv("PRR_LLM_RETRIES", 1);
 // M1 runs a single finder; M3 turns this into a comma-separated heterogeneous fleet.
 export const FINDER_MODELS = (process.env.PRR_FINDER_MODELS ?? "qwen3-coder")
   .split(",")
@@ -84,19 +111,19 @@ export const FINDER_MODELS = (process.env.PRR_FINDER_MODELS ?? "qwen3-coder")
 // Requirement axis model. Defaults to the first finder model; set separately when you want
 // a stronger model on requirements (long acceptance criteria stress weak models).
 export const REQ_MODEL = process.env.PRR_REQ_MODEL ?? FINDER_MODELS[0] ?? "";
-export const LLM_TEMPERATURE = Number(process.env.PRR_LLM_TEMPERATURE ?? 0.2);
-export const LLM_MAX_TOKENS = Number(process.env.PRR_LLM_MAX_TOKENS ?? 8192);
+export const LLM_TEMPERATURE = numEnv("PRR_LLM_TEMPERATURE", 0.2);
+export const LLM_MAX_TOKENS = numEnv("PRR_LLM_MAX_TOKENS", 8192, 256);
 // 0 = don't send response_format (for backends whose schema support is broken).
 export const LLM_STRUCTURED_OUTPUT = process.env.PRR_LLM_STRUCTURED !== "0";
 
 // --- Diff / token budget (PR-Agent style deterministic compression) ---
-export const MAX_DIFF_CHARS = Number(process.env.PRR_MAX_DIFF_CHARS ?? 240_000);
+export const MAX_DIFF_CHARS = numEnv("PRR_MAX_DIFF_CHARS", 240_000, 1000);
 // Extra context lines around each hunk. Asymmetric on purpose: preceding context
 // carries more meaning for review than trailing context.
-export const HUNK_CONTEXT_BEFORE = Number(process.env.PRR_HUNK_CONTEXT_BEFORE ?? 6);
-export const HUNK_CONTEXT_AFTER = Number(process.env.PRR_HUNK_CONTEXT_AFTER ?? 3);
+export const HUNK_CONTEXT_BEFORE = numEnv("PRR_HUNK_CONTEXT_BEFORE", 6);
+export const HUNK_CONTEXT_AFTER = numEnv("PRR_HUNK_CONTEXT_AFTER", 3);
 // Files bigger than this are diffed but never sent whole.
-export const MAX_FILE_BYTES = Number(process.env.PRR_MAX_FILE_BYTES ?? 2_000_000);
+export const MAX_FILE_BYTES = numEnv("PRR_MAX_FILE_BYTES", 2_000_000, 1);
 
 // --- Adversarial verification (M3) ---
 // Skeptics should be a DIFFERENT model family from the finders. Same-family verifiers share
@@ -106,17 +133,22 @@ export const SKEPTIC_MODELS = (process.env.PRR_SKEPTIC_MODELS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 // Verifiers per finding. 1 is a single gate; 3 gives a majority vote worth the name.
-export const SKEPTIC_ROUNDS = Number(process.env.PRR_SKEPTIC_ROUNDS ?? 1);
+export const SKEPTIC_ROUNDS = numEnv("PRR_SKEPTIC_ROUNDS", 1);
 // Source lines shown around the finding. Small on purpose: models degrade with unlimited
 // context, and a skeptic that needs the whole file is guessing.
-export const SKEPTIC_CONTEXT_LINES = Number(process.env.PRR_SKEPTIC_CONTEXT_LINES ?? 25);
+export const SKEPTIC_CONTEXT_LINES = numEnv("PRR_SKEPTIC_CONTEXT_LINES", 25);
 // Skeptic calls are small and numerous, so they get a much tighter deadline than a finder
 // reading a whole diff. Kept separate because a skeptic timeout fails open: one slow verifier
 // must not hold the run for the full finder timeout and then wave the finding through anyway.
-export const SKEPTIC_TIMEOUT_MS = Number(process.env.PRR_SKEPTIC_TIMEOUT_MS ?? 180_000);
+export const SKEPTIC_TIMEOUT_MS = numEnv("PRR_SKEPTIC_TIMEOUT_MS", 180_000, 1000);
+// Ceiling on findings sent to the skeptic per run. The fan-out is findings × rounds and
+// was previously unbounded — a pathological PR anchoring 200 findings issued 200
+// verification calls. The worst (highest-severity) findings get verified first; the
+// overflow is logged, never silently dropped.
+export const MAX_SKEPTIC_FINDINGS = numEnv("PRR_MAX_SKEPTIC_FINDINGS", 30, 1);
 // Findings need corroboration to be published: either N finders found it independently, or
 // a skeptic actively cleared it. A lone unverified finding stays in the summary instead.
-export const MIN_CONSENSUS_SOURCES = Number(process.env.PRR_MIN_CONSENSUS_SOURCES ?? 2);
+export const MIN_CONSENSUS_SOURCES = numEnv("PRR_MIN_CONSENSUS_SOURCES", 2, 1);
 // 0 = publish single-source findings that no skeptic examined (looser, noisier).
 export const REQUIRE_CORROBORATION = process.env.PRR_REQUIRE_CORROBORATION !== "0";
 
@@ -125,14 +157,14 @@ export const REQUIRE_CORROBORATION = process.env.PRR_REQUIRE_CORROBORATION !== "
 // static gate skips. In an Azure pipeline this is the agent's own checkout.
 export const WORKDIR = process.env.PRR_WORKDIR ?? "";
 export const SKIP_STATIC = process.env.PRR_SKIP_STATIC === "1";
-export const STATIC_TIMEOUT_MS = Number(process.env.PRR_STATIC_TIMEOUT_MS ?? 5 * 60 * 1000);
+export const STATIC_TIMEOUT_MS = numEnv("PRR_STATIC_TIMEOUT_MS", 5 * 60 * 1000, 1000);
 // Model that judges high-false-positive tool findings. Unset = those findings are dropped
 // rather than posted unjudged.
 export const TRIAGE_MODEL = process.env.PRR_TRIAGE_MODEL ?? "";
-export const TRIAGE_CONTEXT_LINES = Number(process.env.PRR_TRIAGE_CONTEXT_LINES ?? 12);
+export const TRIAGE_CONTEXT_LINES = numEnv("PRR_TRIAGE_CONTEXT_LINES", 12);
 // Ceiling on one triage call. A PR that trips 200 lint rules has a lint config problem,
 // not a review problem.
-export const MAX_TRIAGE_ITEMS = Number(process.env.PRR_MAX_TRIAGE_ITEMS ?? 40);
+export const MAX_TRIAGE_ITEMS = numEnv("PRR_MAX_TRIAGE_ITEMS", 40, 1);
 
 // --- Review axes ---
 // 1 = skip the requirement axis entirely.
@@ -156,16 +188,22 @@ export const LEARN_FROM_DISMISSALS = process.env.PRR_LEARN_FROM_DISMISSALS !== "
 // Once a repo accumulates this many dismissals in one category, the summary suggests
 // excluding the category. A suggestion, never automatic: building exclusion rules from a
 // handful of dismissals would overfit (PROPOSAL §10).
-export const DISMISSAL_HINT_THRESHOLD = Number(process.env.PRR_DISMISSAL_HINT_THRESHOLD ?? 3);
+export const DISMISSAL_HINT_THRESHOLD = numEnv("PRR_DISMISSAL_HINT_THRESHOLD", 3, 1);
 
 // --- Publishing ---
 // Hard cap on inline comments per run. Noise control beats coverage (see PROPOSAL §9.11).
 // The two axes get separate budgets on purpose: a shared cap lets code findings crowd out
 // "this requirement wasn't implemented", which is usually the more important message.
-export const MAX_INLINE_COMMENTS = Number(process.env.PRR_MAX_INLINE_COMMENTS ?? 10);
-export const MAX_INLINE_REQ_COMMENTS = Number(process.env.PRR_MAX_INLINE_REQ_COMMENTS ?? 3);
-// Findings below this severity never become inline comments.
-export const MIN_INLINE_SEVERITY = (process.env.PRR_MIN_INLINE_SEVERITY ?? "medium") as Severity;
+export const MAX_INLINE_COMMENTS = numEnv("PRR_MAX_INLINE_COMMENTS", 10);
+export const MAX_INLINE_REQ_COMMENTS = numEnv("PRR_MAX_INLINE_REQ_COMMENTS", 3);
+// Findings below this severity never become inline comments. Validated: an unchecked
+// cast let "Medium" (capital M) rank as -1 and silently filter out every comment.
+export const MIN_INLINE_SEVERITY = enumEnv("PRR_MIN_INLINE_SEVERITY", "medium", [
+  "critical",
+  "high",
+  "medium",
+  "low",
+] as const) as Severity;
 // 1 = compute everything but post nothing (safe first run against a real PR).
 // Read lazily, not captured at import time: the CLI sets this env var after config has
 // already been loaded, so a const here would silently ignore --dry-run.

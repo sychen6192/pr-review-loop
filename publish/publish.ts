@@ -95,7 +95,8 @@ export async function publish(
     for (const f of findings) {
       log(`  ${f.severity} ${f.file}:${f.anchor?.startLine} — ${f.claim}`);
     }
-    result.posted = findings;
+    // Deliberately NOT result.posted — a dry run posts nothing, and the exit summary
+    // must not read "Posted N".
     return result;
   }
 

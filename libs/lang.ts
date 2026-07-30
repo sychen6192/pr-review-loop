@@ -5,6 +5,8 @@ const EXT_LANG: Record<string, string> = {
   ".java": "java",
   ".kt": "kotlin",
   ".ts": "typescript",
+  ".mts": "typescript",
+  ".cts": "typescript",
   ".tsx": "tsx",
   ".js": "javascript",
   ".jsx": "jsx",

@@ -1130,32 +1130,21 @@ section("Windows process spawning");
 
 section("opencode invocation: prompt delivery");
 {
+  // The prompt is delivered on the child's stdin, so argv carries flags only. Nothing about
+  // the prompt may appear there: cmd.exe re-parses the command line on Windows, and it is
+  // capped at 8191 chars, while a review prompt carrying a diff runs to six figures.
   const opts = { jsonEvents: true, agent: "prloop-reviewer" };
-  const small = buildInvocation("m", "short prompt", { ...opts, platform: "linux", writeFile: () => "/tmp/x.md" });
-  eq("a prompt that fits stays positional", small.args[small.args.length - 1], "short prompt");
-  check("no temp file for the common path", small.promptFile === undefined);
+  const args = buildInvocation("m", opts);
+  eq("argv is flags only, no positional prompt", args, ["run", "--agent", "prloop-reviewer", "--model", "m", "--format", "json"]);
+  check("no --file", !args.includes("--file"));
+  eq("agent flag is always present", args[1], "--agent");
+  check("json format requested when configured", args.includes("--format") && args.includes("json"));
 
-  // Windows cannot carry a review prompt on the command line at any size that matters.
-  let written = "";
-  const big = buildInvocation("m", "x".repeat(60_000), {
-    ...opts,
-    platform: "win32",
-    writeFile: (t) => { written = t; return "C:\\tmp\\prompt.md"; },
-  });
-  check("oversized prompt switches to --file", big.args.includes("--file"));
-  eq("...pointing at the written file", big.promptFile, "C:\\tmp\\prompt.md");
-  eq("...with the whole prompt in it", written.length, 60_000);
-  check("...and a message telling the agent to use it", (big.args[big.args.length - 1] ?? "").includes("attached file"));
-  check("...the prompt itself is no longer an argument", !big.args.some((a) => a.length > 1000));
-  check("...and it says why in the note", (big.note ?? "").includes("--file"));
+  const noModel = buildInvocation("", { ...opts, jsonEvents: false });
+  eq("no --model when empty, no --format when disabled", noModel, ["run", "--agent", "prloop-reviewer"]);
 
-  // Without a writer available there is nothing to fall back to; stay inline rather than
-  // silently dropping the prompt.
-  const noWriter = buildInvocation("m", "x".repeat(60_000), { ...opts, platform: "win32" });
-  check("no writer -> unchanged inline args", noWriter.args.some((a) => a.length === 60_000));
-
-  eq("agent flag is always present", small.args[1], "--agent");
-  check("json format requested when configured", small.args.includes("--format") && small.args.includes("json"));
+  // Whatever the prompt looks like, a flags-only argv cannot hit the cmd.exe limit.
+  check("flags-only argv is always within the cmd.exe limit", planSpawn("opencode.cmd", args, "win32").error === undefined);
 }
 
 section("unusable completions are named, not left to the JSON parser");

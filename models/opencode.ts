@@ -11,9 +11,6 @@
 // once on a parse failure — but a weak model will still comply less reliably here than on
 // the openai path. Prefer the openai runner when the endpoint supports guided decoding.
 import { spawn } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { explainSpawnError, planSpawn } from "../libs/shell";
 import {
   AGENT_TIMEOUT_MS,
@@ -77,43 +74,36 @@ ${JSON.stringify(req.schema, null, 2)}
 }
 
 /**
- * Decides how the prompt reaches opencode.
+ * Builds the argv for one `opencode run`. The prompt is deliberately NOT in it — the caller
+ * writes it to the child's stdin.
  *
- * Passing it as a positional argument is simplest and is what every POSIX run does. On
- * Windows it is impossible: CreateProcess caps the command line at 32767 characters and a
- * .cmd shim routed through cmd.exe at 8191, while a review prompt carrying a diff runs to
- * six figures. `opencode run -f <file>` attaches file content to the message, which is the
- * documented way to hand it more text than an argument can hold.
+ * `opencode run` reads stdin to EOF whenever stdin is not a TTY and uses it as the message
+ * (appended after the positional message, if any). Passing no positional message therefore
+ * makes the piped text the entire prompt.
  *
- * The file route is used only when the inline one would not fit, so the common path stays
- * unchanged and this cannot regress a working setup.
+ * That is the only route that survives a review prompt carrying a diff. Two earlier attempts
+ * did not:
+ *
+ * - Positional argument: an npm-installed `opencode.cmd` must be spawned through cmd.exe
+ *   (Node refuses to spawn .cmd directly since the CVE-2024-27980 fix), and cmd.exe re-parses
+ *   the command line, shredding a prompt full of quotes, newlines and JSON. It is capped at
+ *   8191 chars besides, and a diff prompt runs to six figures. opencode also re-quotes
+ *   positional messages itself, corrupting any prompt containing a double quote even on POSIX.
+ * - `--file <tmp>/prompt.md <instruction>`: opencode declares --file as a yargs array option,
+ *   so it greedily swallows every following positional. The instruction was parsed as a
+ *   second file path, giving `File not found: <the instruction text>`.
+ *
+ * stdin has no length limit and never passes through a shell, so this needs no
+ * platform-specific branch at all.
  */
 export function buildInvocation(
   model: string,
-  prompt: string,
-  opts: { jsonEvents: boolean; agent: string; platform?: string; writeFile?: (text: string) => string },
-): { args: string[]; promptFile?: string; note?: string } {
-  const base = ["run", "--agent", opts.agent];
-  if (model) base.push("--model", model);
-  if (opts.jsonEvents) base.push("--format", "json");
-
-  const inline = [...base, prompt];
-  const plan = planSpawn(OPENCODE_BIN, inline, opts.platform);
-  if (!plan.error || !opts.writeFile) return { args: inline };
-
-  const promptFile = opts.writeFile(prompt);
-  return {
-    args: [
-      ...base,
-      "--file",
-      promptFile,
-      // The positional message still has to say what to do with the attachment; opencode
-      // attaches file content but the instruction lives in the message.
-      "Follow the instructions in the attached file exactly. Output only what it specifies, with no other text.",
-    ],
-    promptFile,
-    note: `prompt (${prompt.length} chars) passed via --file: ${plan.error}`,
-  };
+  opts: { jsonEvents: boolean; agent: string },
+): string[] {
+  const args = ["run", "--agent", opts.agent];
+  if (model) args.push("--model", model);
+  if (opts.jsonEvents) args.push("--format", "json");
+  return args;
 }
 
 function runOnce(label: string, model: string, prompt: string): Promise<ChatResponse> {
@@ -122,22 +112,15 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
     const stopHeartbeat = startHeartbeat(`[${label}]`);
     const started = Date.now();
 
-    let tmpDir: string | undefined;
-    const invocation = buildInvocation(model, prompt, {
+    const args = buildInvocation(model, {
       jsonEvents: OPENCODE_JSON_EVENTS,
       agent: OPENCODE_AGENT,
-      writeFile: (text) => {
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prloop-oc-"));
-        const file = path.join(tmpDir, "prompt.md");
-        fs.writeFileSync(file, text, "utf8");
-        return file;
-      },
     });
-    if (invocation.note) logVerbose(`[${label}] ${invocation.note}`);
+    logVerbose(`[${label}] prompt (${prompt.length} chars) passed via stdin`);
 
     // Windows also needs the command resolved through PATHEXT, and .cmd shims routed via
     // cmd.exe — Node refuses to spawn them directly since the CVE-2024-27980 fix.
-    const plan = planSpawn(OPENCODE_BIN, invocation.args);
+    const plan = planSpawn(OPENCODE_BIN, args);
     if (plan.error) {
       log(`[${label}] [FAIL] ${plan.error}`);
       stopHeartbeat();
@@ -149,9 +132,15 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
       cwd: PRLOOP_ROOT,
       env: process.env,
       windowsVerbatimArguments: plan.windowsVerbatimArguments,
-      // opencode >= 1.17 waits for stdin EOF when stdin is piped.
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+
+    // opencode blocks on reading stdin to EOF before it prompts the model, so this has to be
+    // written and closed unconditionally — a piped-but-never-closed stdin hangs the run.
+    // EPIPE is expected if the child dies first (bad flag, missing auth); the close handler
+    // reports that, so swallow it here rather than let it surface as an unhandled error.
+    child.stdin.on("error", () => {});
+    child.stdin.end(prompt, "utf8");
 
     const acc: Acc = { text: "", lastText: "" };
     let rawStdout = "";
@@ -186,7 +175,6 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
       clearTimeout(timer);
       if (killEscalation) clearTimeout(killEscalation);
       stopHeartbeat();
-      if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
       if (stdoutBuf.trim()) traceEvent(stdoutBuf, `[${label}]`, acc); // flush partial line
 
       const secs = Math.round((Date.now() - started) / 1000);

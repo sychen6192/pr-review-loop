@@ -34,7 +34,8 @@ import { SEEDED_FILES, EXPECTED_ANCHORS } from "../fixtures/seeded-pr";
 import { load, sourcePaths } from "../libs/tls";
 import { Semaphore } from "../libs/limit";
 import { describeBadCompletion, isTransientModelError } from "../models/runner";
-import { explainSpawnError, planSpawn } from "../libs/shell";
+import { explainSpawnError, planSpawn, planKill, killTree } from "../libs/shell";
+import { spawn as spawnChild } from "node:child_process";
 import { buildInvocation } from "../models/opencode";
 import { anchorAndDedupe } from "../gates/aggregate";
 import type { FinderOutput } from "../gates/finder";
@@ -1126,6 +1127,58 @@ section("Windows process spawning");
   check("ENAMETOOLONG names the length", ex("ENAMETOOLONG").includes("too long"));
   check("EACCES names permissions", ex("EACCES").includes("executable"));
   check("unknown code still reports something", ex("EWEIRD").includes("failed to start"));
+}
+
+section("killing the process tree on timeout");
+{
+  // Windows has no signals: Node maps them all to TerminateProcess, so the only way to reach
+  // the tree is taskkill, and there is no gentler first attempt to make.
+  const win = planKill(4242, "SIGTERM", "win32");
+  check("win32 uses taskkill with the tree and force flags",
+    win.via === "taskkill" && win.args.join(" ") === "/pid 4242 /T /F");
+  eq("win32 SIGKILL is the same plan as SIGTERM",
+    JSON.stringify(planKill(4242, "SIGKILL", "win32")), JSON.stringify(win));
+
+  // POSIX signals the process group — a negative pid — not the single process we hold.
+  const posixTerm = planKill(4242, "SIGTERM", "linux");
+  check("posix targets the process group, not the lone child",
+    posixTerm.via === "signal" && posixTerm.target === -4242 && posixTerm.signal === "SIGTERM");
+  const posixKill = planKill(4242, "SIGKILL", "linux");
+  check("posix keeps the escalated signal", posixKill.via === "signal" && posixKill.signal === "SIGKILL");
+
+  // The regression end to end: a wrapper with a longer-lived child, the shape cmd.exe +
+  // opencode makes on Windows. child.kill() would leave the grandchild running.
+  if (process.platform !== "win32") {
+    const wrapper = spawnChild("sh", ["-c", "sleep 30 & echo $!; wait"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      detached: true, // what the runner now does; the group signal depends on it
+    });
+    const grandchild = await new Promise<number>((res) => {
+      wrapper.stdout.setEncoding("utf8");
+      wrapper.stdout.once("data", (d: string) => res(Number(d.trim())));
+    });
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    check("precondition: the grandchild is running", alive(grandchild));
+    killTree(wrapper, "SIGKILL");
+    await new Promise((r) => setTimeout(r, 300));
+    check("killTree reaps the grandchild too", !alive(grandchild));
+    check("killTree reaps the wrapper", wrapper.exitCode !== null || wrapper.signalCode !== null);
+    check("killTree on an already-dead process does not throw", (() => {
+      try {
+        killTree(wrapper, "SIGKILL");
+        return true;
+      } catch {
+        return false;
+      }
+    })());
+  }
 }
 
 section("opencode invocation: prompt delivery");

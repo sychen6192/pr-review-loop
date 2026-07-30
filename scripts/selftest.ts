@@ -466,6 +466,21 @@ section("rule selection");
     check("_base.md frontmatter stripped", !base.body.startsWith("---"));
   }
 }
+{
+  // The shipped TS/Node/Playwright packs, selected against a monorepo layout. These pin the
+  // additive-by-extension strategy: a backend .ts file gets the TS packs and nothing React.
+  const shipped = loadRules();
+  const names = (paths: string[]) => selectRules(shipped, paths).map((r) => r.name).sort();
+  eq("backend ts", names(["/apps/api/src/user.ts"]), ["_base.md", "node-server.md", "typescript.md"]);
+  eq("unit test does not load playwright", names(["/apps/api/src/user.test.ts"]), ["_base.md", "node-server.md", "typescript.md"]);
+  eq("e2e spec loads playwright", names(["/apps/web/src/login.spec.ts"]), ["_base.md", "node-server.md", "playwright.md", "typescript.md"]);
+  eq("app route handler gets ts and next", names(["/apps/web/app/route.ts"]), ["_base.md", "nextjs.md", "node-server.md", "typescript.md"]);
+  eq("tsx page gets next only", names(["/apps/web/app/page.tsx"]), ["_base.md", "nextjs.md"]);
+  // `**/app/**` must not swallow the `apps/` directory prefix.
+  check("apps/ prefix does not match **/app/**", !names(["/apps/api/src/user.ts"]).includes("nextjs.md"));
+  eq("mts detected as typescript", detectLanguage("/src/x.mts"), "typescript");
+  check("mts is reviewable", isReviewable("/src/x.mts"));
+}
 
 // --- adversarial verification ---
 section("skeptic verdict parsing (fail-open)");

@@ -30,16 +30,22 @@ export function createRunDir(ref: PrRef, iterationId: number): RunDir {
     `iter-${iterationId}-${timestamp()}`,
   );
   fs.mkdirSync(dir, { recursive: true });
+  // Best-effort: a full disk or read-only runs/ must not kill a review that has already
+  // paid for its model calls — the artifacts are an audit trail, not the product.
+  const write = (name: string, content: string) => {
+    try {
+      fs.writeFileSync(path.join(dir, name), content);
+    } catch (e) {
+      console.error(`[WARN] could not write artifact ${name}: ${e instanceof Error ? e.message : e}`);
+    }
+  };
   return {
     dir,
     save(name, content) {
-      fs.writeFileSync(path.join(dir, name), content);
+      write(name, content);
     },
     saveJson(name, value) {
-      fs.writeFileSync(
-        path.join(dir, name),
-        JSON.stringify(value, (_k, v) => (v instanceof Set ? [...v] : v), 2),
-      );
+      write(name, JSON.stringify(value, (_k, v) => (v instanceof Set ? [...v] : v), 2));
     },
   };
 }

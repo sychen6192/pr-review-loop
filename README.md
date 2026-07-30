@@ -120,7 +120,7 @@ either a PAT with **Code (Read & Write)**, or just `az login`.
 git clone <repo> prloop && cd prloop
 npm install
 cp .env.example .env
-npm run check                                  # typecheck + 296 offline tests
+npm run check                                  # typecheck + offline selftest (count printed by the run)
 npx tsx scripts/doctor.ts '<PR URL>' --smoke   # preflight + one live model call
 ```
 
@@ -182,10 +182,12 @@ npx tsx scripts/local-review.ts anchor <repo> <base> <head> <findings.json>
 - **Stale threads auto-close** when their target code is gone. The criteria are narrow on
   purpose: wrongly closing a live issue is worse than leaving a stale comment.
 - **Dismissals stick.** A finding closed as *wontFix*/*byDesign* is recorded per repo
-  (`runs/<org>/<project>/<repo>/dismissals.jsonl`) and never posted again — not on this PR,
-  not on a later one carrying the same code, and not reworded onto the same lines. After
-  three dismissals in one category the summary suggests excluding it, and stops there:
-  prloop never writes its own config.
+  (`runs/<org>/<project>/<repo>/dismissals.jsonl`) and never posted again on any PR where
+  the model produces the same quote (rewordings on the same PR are also caught by position
+  overlap; a substantially reworded finding on a *different* PR can still reappear —
+  fingerprints hash the quote). A thread merely marked *Closed* is treated as handled, not
+  dismissed. After three dismissals in one category the summary suggests excluding it, and
+  stops there: prloop never writes its own config.
 - **Clean PR → one quiet line.** Style and formatting never get a comment; that's the linter's job.
 
 Every run writes `runs/<org>/<project>/<repo>/pr-<id>/iter-<N>-<ts>/`: the exact prompts
@@ -202,6 +204,8 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_FINDER_MODELS` | `qwen3-coder` | comma-separated; different families is the point |
 | `PRR_SKEPTIC_MODELS` | — | empty = no verification runs |
 | `PRR_SKEPTIC_ROUNDS` | `1` | 3 gives a majority vote worth the name |
+| `PRR_MAX_SKEPTIC_FINDINGS` | `30` | fan-out ceiling; worst findings verified first, overflow logged |
+| `PRR_ADO_CONCURRENCY` | `6` | parallel blob fetches during intake |
 | `PRR_LLM_CONCURRENCY` | `6` | in-flight model calls across all stages; match your endpoint's batch size |
 | `PRR_LLM_RETRIES` | `1` | retries on transient model failures (never on 4xx) |
 | `PRR_LLM_MAX_TOKENS` | `8192` | **raise to 16384+ for thinking models** — reasoning is billed to this budget |

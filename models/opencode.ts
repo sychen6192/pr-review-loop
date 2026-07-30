@@ -11,7 +11,16 @@
 // once on a parse failure — but a weak model will still comply less reliably here than on
 // the openai path. Prefer the openai runner when the endpoint supports guided decoding.
 import { spawn } from "node:child_process";
-import { explainSpawnError, planSpawn } from "../libs/shell";
+import {
+  DETACH_CHILDREN,
+  explainSpawnError,
+  killTree,
+  planSpawn,
+  trackForShutdown,
+} from "../libs/shell";
+
+// After the child exits, how long to wait for its stdio pipes to close before finishing anyway.
+const EXIT_DRAIN_MS = 2_000;
 import {
   AGENT_TIMEOUT_MS,
   OPENCODE_AGENT,
@@ -133,7 +142,11 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
       env: process.env,
       windowsVerbatimArguments: plan.windowsVerbatimArguments,
       stdio: ["pipe", "pipe", "pipe"],
+      // POSIX only: makes the child a process-group leader so a timeout can kill the whole
+      // tree, not just the process we happen to hold. See libs/shell.ts.
+      detached: DETACH_CHILDREN,
     });
+    trackForShutdown(child);
 
     // opencode blocks on reading stdin to EOF before it prompts the model, so this has to be
     // written and closed unconditionally — a piped-but-never-closed stdin hangs the run.
@@ -161,19 +174,35 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
       for (const line of chunk.trim().split("\n")) if (line.trim()) logVerbose(`[${label}] ${line}`);
     });
 
+    // Timeout: kill the whole process tree. The old code signalled only the process we
+    // spawned, which on Windows is the cmd.exe wrapper rather than opencode itself.
+    let timedOut = false;
     let killEscalation: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
-      logVerbose(`[${label}] timeout after ${AGENT_TIMEOUT_MS}ms, sending SIGTERM`);
-      child.kill("SIGTERM");
-      killEscalation = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      timedOut = true;
+      log(
+        `[${label}] timed out after ${AGENT_TIMEOUT_MS}ms, killing the opencode process tree ` +
+          `(raise PRR_AGENT_TIMEOUT_MS for slower models)`,
+      );
+      killTree(child, "SIGTERM");
+      // Only POSIX has anything to escalate to: on Windows taskkill /F was already a hard
+      // kill, and repeating it would just log a second failure against a dead pid.
+      if (DETACH_CHILDREN) {
+        killEscalation = setTimeout(() => {
+          logVerbose(`[${label}] process tree still alive, sending SIGKILL`);
+          killTree(child, "SIGKILL");
+        }, 10_000);
+      }
     }, AGENT_TIMEOUT_MS);
 
     let finished = false;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = () => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       if (killEscalation) clearTimeout(killEscalation);
+      if (drainTimer) clearTimeout(drainTimer);
       stopHeartbeat();
       if (stdoutBuf.trim()) traceEvent(stdoutBuf, `[${label}]`, acc); // flush partial line
 
@@ -183,10 +212,27 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
         resolve({ text: "", model, error: spawnError });
         return;
       }
-      log(`[${label}] done (elapsed ${secs}s, ${text.length} chars)`);
+      // A killed run is not a completed one; say so, but still hand back what arrived — the
+      // caller's schema parse is fail-closed and decides whether the partial output is usable.
+      log(
+        timedOut
+          ? `[${label}] timed out (elapsed ${secs}s, ${text.length} chars kept)`
+          : `[${label}] done (elapsed ${secs}s, ${text.length} chars)`,
+      );
       resolve({ text, model });
     };
 
+    // 'close' waits for the stdio pipes to close as well as for the process to exit, so any
+    // survivor holding an inherited pipe keeps it from ever firing — that is what turned a
+    // Windows timeout into a permanent hang. 'exit' always fires; let the pipes drain briefly,
+    // then finish regardless. finish() is idempotent, so the usual ordering ('close' first,
+    // promptly) is unaffected.
+    child.on("exit", () => {
+      drainTimer = setTimeout(() => {
+        logVerbose(`[${label}] process exited but its output pipes are still open; not waiting`);
+        finish();
+      }, EXIT_DRAIN_MS);
+    });
     child.on("close", finish);
     child.on("error", (err) => {
       // The old message blamed a missing install for every errno, which is wrong for the

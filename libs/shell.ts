@@ -1,8 +1,9 @@
 // Minimal command runner. Only used for optional external CLIs (az); the pipeline itself
 // never shells out for anything it needs to be correct.
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { logVerbose } from "./log";
 
 export interface ExecResult {
   stdout: string;
@@ -119,6 +120,110 @@ export function planSpawn(cmd: string, args: string[], platform: string = proces
     args: ["/d", "/s", "/c", `"${line}"`],
     windowsVerbatimArguments: true,
   };
+}
+
+// ─── Killing a process tree ──────────────────────────────────────────────────
+//
+// `child.kill()` signals ONE process — the one we spawned. That is the wrong target whenever
+// the thing doing the work is a grandchild, which on Windows it always is: an npm-installed
+// `opencode.cmd` has to be run through cmd.exe (see planSpawn), so our child is the cmd.exe
+// wrapper and opencode is its child. Killing the wrapper leaves opencode running, still
+// holding the inherited stdout/stderr pipe handles — and Node's 'close' event waits for those
+// pipes to close, so the run hangs forever instead of ending. The escalation to SIGKILL then
+// targets a pid that is already a corpse and silently does nothing.
+//
+// Two platforms, two mechanisms:
+//
+// - Windows has no signals at all. Node maps every signal to TerminateProcess, so SIGTERM and
+//   SIGKILL are the same hard kill and a graceful-then-forceful escalation is meaningless.
+//   `taskkill /T` is the only way to reach the whole tree.
+// - POSIX can signal a process group, but only if the child leads one — hence `detached: true`
+//   at spawn time (DETACH_CHILDREN below). Signalling a negative pid reaches the group.
+
+export type KillPlan =
+  | { via: "taskkill"; file: string; args: string[] }
+  | { via: "signal"; target: number; signal: NodeJS.Signals };
+
+/** Pure: how to kill `pid` and its descendants on this platform. Split out so it is testable. */
+export function planKill(
+  pid: number,
+  signal: NodeJS.Signals,
+  platform: string = process.platform,
+): KillPlan {
+  if (platform === "win32") {
+    // /T = tree, /F = force. Without /F taskkill sends WM_CLOSE, which a console process
+    // never receives, so there is no gentler variant worth trying first.
+    return { via: "taskkill", file: "taskkill", args: ["/pid", String(pid), "/T", "/F"] };
+  }
+  return { via: "signal", target: -pid, signal }; // negative pid = the process group
+}
+
+/** True on POSIX: the child must lead its own process group for planKill's group signal. */
+export const DETACH_CHILDREN = process.platform !== "win32";
+
+/** Kills `child` and everything it spawned. Never throws — the caller is already on a sad path. */
+export function killTree(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"): void {
+  const pid = child.pid;
+  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  const plan = planKill(pid, signal);
+
+  if (plan.via === "taskkill") {
+    try {
+      spawn(plan.file, plan.args, { stdio: "ignore", windowsHide: true }).unref();
+      return;
+    } catch (err) {
+      logVerbose(`taskkill failed to start, falling back to killing the child only: ${String(err)}`);
+      try {
+        child.kill(signal);
+      } catch {
+        /* already gone */
+      }
+      return;
+    }
+  }
+
+  try {
+    process.kill(plan.target, plan.signal);
+  } catch (err) {
+    // ESRCH just means the group is already gone. Anything else (e.g. the child was not
+    // detached after all) is worth a direct-child fallback rather than a silent no-op.
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+      try {
+        child.kill(signal);
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+}
+
+// `detached: true` puts the child in its own process group, which is what makes the group kill
+// above work — but it also means a Ctrl-C at the terminal no longer reaches it, because the
+// shell only signals its own foreground group. Without the registry below, interrupting the
+// tool would leave opencode running and holding the GPU. Windows needs none of this: children
+// are not detached there, and a console Ctrl-C already goes to every process on the console.
+const liveChildren = new Set<ChildProcess>();
+let shutdownHooked = false;
+
+/** Registers `child` so an interrupted run still takes its process tree down with it. */
+export function trackForShutdown(child: ChildProcess): void {
+  liveChildren.add(child);
+  child.once("exit", () => liveChildren.delete(child));
+  if (shutdownHooked) return;
+  shutdownHooked = true;
+
+  const killAll = () => {
+    for (const c of liveChildren) killTree(c, "SIGKILL");
+    liveChildren.clear();
+  };
+  // 'exit' handlers must be synchronous; process.kill is, so the POSIX path is safe here.
+  process.on("exit", killAll);
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      killAll();
+      process.exit(sig === "SIGINT" ? 130 : 143);
+    });
+  }
 }
 
 /** Turns a spawn errno into the cause, rather than guessing one cause for all of them. */

@@ -956,12 +956,16 @@ section("dispatcher carries the CA on every path");
       `  bypassed: dispatcherFor("http://localhost:4000/v1") !== undefined,\n` +
       `}));\n`,
   );
-  const res = spawnSync("npx", ["tsx", probe], {
+  // Not `spawnSync("npx", ...)`: on Windows that is npx.cmd, which Node refuses to spawn
+  // directly (CVE-2024-27980) — spawnSync returns EINVAL with stdout/stderr undefined.
+  // Running the tsx CLI's JS entry with the current node binary needs no shell anywhere.
+  const tsxCli = path.join(PRLOOP_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
+  const res = spawnSync(process.execPath, [tsxCli, probe], {
     encoding: "utf8",
     env: { ...process.env, PRR_CA_CERTS: pem, PRR_HTTPS_PROXY: "", PRR_NO_PROXY: "localhost", HTTPS_PROXY: "", https_proxy: "", PRR_QUIET: "1" },
   });
-  const out = parseJsonObject<{ direct?: boolean; bypassed?: boolean }>(res.stdout);
-  check("probe process ran", out.ok, res.stderr.slice(0, 400));
+  const out = parseJsonObject<{ direct?: boolean; bypassed?: boolean }>(res.stdout ?? "");
+  check("probe process ran", out.ok, (res.error ? String(res.error) : (res.stderr ?? "")).slice(0, 400));
   if (out.ok) {
     check("CA is applied with no proxy configured", out.value.direct === true);
     check("CA is applied to NO_PROXY hosts too", out.value.bypassed === true);

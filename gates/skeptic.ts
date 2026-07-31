@@ -6,6 +6,7 @@
 // alive (fail-open here, because a dead verifier must not silently delete real bugs — the
 // consensus rule downstream still requires corroboration before publishing).
 import {
+  MAX_SKEPTIC_FINDINGS,
   SKEPTIC_CONTEXT_LINES,
   SKEPTIC_MODELS,
   SKEPTIC_ROUNDS,
@@ -33,6 +34,8 @@ export interface SkepticOutcome {
   verdicts: Verdict[];
   // Majority of answering skeptics refuted it.
   killed: boolean;
+  // What the skeptics were shown — the audit trail for debugging a wrong refutation.
+  prompt?: string;
 }
 
 const VALID_SEVERITY = new Set<string>(SEVERITIES);
@@ -62,22 +65,7 @@ export function parseVerdict(raw: string, model: string): Verdict {
   };
 }
 
-async function verifyOne(
-  runner: ModelRunner,
-  finding: AnchoredFinding,
-  file: FileDiff,
-  model: string,
-): Promise<Verdict> {
-  const prompt = buildSkepticPrompt({
-    claim: finding.claim,
-    category: finding.category,
-    severity: finding.severity,
-    file,
-    side: finding.anchor!.side,
-    startLine: finding.anchor!.startLine,
-    endLine: finding.anchor!.endLine,
-    contextLines: SKEPTIC_CONTEXT_LINES,
-  });
+async function verifyOne(runner: ModelRunner, prompt: string, model: string): Promise<Verdict> {
   const res = await runner.chat({
     model,
     system: SKEPTIC_SYSTEM,
@@ -103,27 +91,56 @@ export async function runSkeptic(
     return findings.map((f) => ({ finding: f, verdicts: [], killed: false }));
   }
 
+  // Fan-out ceiling: findings × rounds calls, worst findings first. The overflow passes
+  // through unverified (and the corroboration rule downstream keeps single-source
+  // unverified findings out of inline comments) — logged, never silently dropped.
+  let toVerify = findings;
+  let overflow: AnchoredFinding[] = [];
+  if (findings.length > MAX_SKEPTIC_FINDINGS) {
+    const ranked = [...findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+    toVerify = ranked.slice(0, MAX_SKEPTIC_FINDINGS);
+    overflow = ranked.slice(MAX_SKEPTIC_FINDINGS);
+    log(
+      `[WARN] skeptic fan-out capped: verifying the ${MAX_SKEPTIC_FINDINGS} highest-severity ` +
+        `of ${findings.length} findings (${overflow.length} pass through unverified; ` +
+        `raise PRR_MAX_SKEPTIC_FINDINGS to verify more)`,
+    );
+  }
+
   // One verifier per round per finding; rounds cycle through the configured models so a
   // 3-round setup with 2 models still gets cross-family coverage.
-  const jobs: Array<Promise<SkepticOutcome>> = findings.map(async (finding) => {
+  const jobs: Array<Promise<SkepticOutcome>> = toVerify.map(async (finding) => {
     const file = files.find((f) => f.path === finding.file);
     if (!file || !finding.anchor) return { finding, verdicts: [], killed: false };
 
+    const prompt = buildSkepticPrompt({
+      claim: finding.claim,
+      category: finding.category,
+      severity: finding.severity,
+      file,
+      side: finding.anchor.side,
+      startLine: finding.anchor.startLine,
+      endLine: finding.anchor.endLine,
+      contextLines: SKEPTIC_CONTEXT_LINES,
+    });
     const models = Array.from(
       { length: SKEPTIC_ROUNDS },
       (_, i) => SKEPTIC_MODELS[i % SKEPTIC_MODELS.length]!,
     );
-    const verdicts = await Promise.all(models.map((m) => verifyOne(runner, finding, file, m)));
+    const verdicts = await Promise.all(models.map((m) => verifyOne(runner, prompt, m)));
 
     // Only skeptics that actually answered get a vote.
     const answered = verdicts.filter((v) => !v.error);
     const refutedCount = answered.filter((v) => v.refuted).length;
     const killed = answered.length > 0 && refutedCount * 2 > answered.length;
 
-    return { finding, verdicts, killed };
+    return { finding, verdicts, killed, prompt };
   });
 
-  const outcomes = await Promise.all(jobs);
+  const outcomes = [
+    ...(await Promise.all(jobs)),
+    ...overflow.map((f) => ({ finding: f, verdicts: [], killed: false })),
+  ];
   const killed = outcomes.filter((o) => o.killed).length;
   // A finding every one of whose verifiers errored was NOT verified. Reporting it inside
   // "verified N" is a lie that costs the reader the one fact they need: an unverified

@@ -27,9 +27,6 @@ export function die(msg: string): never {
   process.exit(1);
 }
 
-export function tail(s: string, n = 6000): string {
-  return s.length > n ? `…(truncated)\n${s.slice(-n)}` : s;
-}
 
 // Heartbeat every 15s during long ops so it doesn't look hung.
 export function startHeartbeat(label: string): () => void {

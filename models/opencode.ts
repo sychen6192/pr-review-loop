@@ -137,9 +137,16 @@ function runOnce(label: string, model: string, prompt: string): Promise<ChatResp
       return;
     }
 
+    // opencode brings its own provider auth; prloop's ADO token and LLM key have no
+    // business in a third-party CLI's environment.
+    const childEnv = { ...process.env };
+    delete childEnv["PRR_ADO_PAT"];
+    delete childEnv["SYSTEM_ACCESSTOKEN"];
+    delete childEnv["PRR_LLM_API_KEY"];
+
     const child = spawn(plan.file, plan.args, {
       cwd: PRLOOP_ROOT,
-      env: process.env,
+      env: childEnv,
       windowsVerbatimArguments: plan.windowsVerbatimArguments,
       stdio: ["pipe", "pipe", "pipe"],
       // POSIX only: makes the child a process-group leader so a timeout can kill the whole

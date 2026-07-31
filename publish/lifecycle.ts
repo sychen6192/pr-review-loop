@@ -116,7 +116,10 @@ export function collectDismissals(threads: Thread[]): DismissalRecord[] {
   const fpRe = /<!-- prloop:fp=([0-9a-f]+) -->/;
   const catRe = /<!-- prloop:cat=([a-z-]+) -->/;
   for (const t of threads) {
-    const dismissed = t.status === "wontFix" || t.status === "byDesign" || t.status === "closed";
+    // wontFix/byDesign only. In the ADO UI "Closed" routinely means "handled", not
+    // "wrong finding" — recording it as a dismissal would suppress a real finding class
+    // forever, across PRs, because someone once fixed an instance and closed the thread.
+    const dismissed = t.status === "wontFix" || t.status === "byDesign";
     if (!dismissed) continue;
     const c = t.comments?.find((x) => !x.isDeleted && (x.content ?? "").includes(BOT_MARKER));
     if (!c) continue;

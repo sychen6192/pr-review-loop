@@ -2,7 +2,8 @@
 // CLI entry: prloop <PR URL> [--since <iteration>] [--dry-run]
 //
 // Exit codes: 0 = reviewed, no high-risk findings; 2 = high-risk findings posted;
-// 1 = fatal (auth, network, bad arguments).
+// 3 = review incomplete (a stage or the publish step failed); 1 = fatal (auth, network,
+// bad arguments).
 import {
   FINDER_MODELS,
   FINDING_CATEGORIES,
@@ -41,9 +42,6 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0 || args.includes("-h") || args.includes("--help")) usage();
 
-  const url = args.find((a) => !a.startsWith("-"));
-  if (!url) usage();
-
   let compareTo = 0;
   let sinceAuto = false;
   const sinceIdx = args.indexOf("--since");
@@ -56,6 +54,11 @@ async function main() {
       compareTo = n;
     }
   }
+
+  // The positional scan must skip --since's VALUE ("3" or "auto" doesn't start with "-"),
+  // or `prloop --since 3 <URL>` parses "3" as the PR URL.
+  const url = args.find((a, i) => !a.startsWith("-") && (sinceIdx < 0 || i !== sinceIdx + 1));
+  if (!url) usage();
   if (args.includes("--dry-run")) process.env["PRR_DRY_RUN"] = "1";
 
   const ref = parsePrUrl(url);

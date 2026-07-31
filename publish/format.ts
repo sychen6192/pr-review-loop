@@ -252,10 +252,14 @@ export function renderSummary(input: SummaryInput): string {
     );
   }
   if (agg.stats.raw > 0) {
-    const killed = agg.stats.anchored - agg.stats.survived;
+    // stats.refuted, not anchored - survived: survived includes merged tool findings, so
+    // the subtraction went negative on exactly the runs with static analysis enabled and
+    // silently hid the refutation count.
     notes.push(
       `raw findings ${agg.stats.raw} → deduped ${agg.stats.afterDedupe} → anchored ${agg.stats.anchored}` +
-        (killed > 0 ? ` → ${killed} refuted by adversarial verification, ${agg.stats.survived} survived` : ""),
+        (agg.stats.refuted > 0
+          ? ` → ${agg.stats.refuted} refuted by adversarial verification, ${agg.stats.survived} survived`
+          : ""),
     );
   }
   if (notes.length > 0) {

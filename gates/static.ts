@@ -146,7 +146,15 @@ async function runTool(
   return { findings };
 }
 
-export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
+export async function runStaticGate(
+  files: FileDiff[],
+  // The iteration's source commit, quoted back in the stale-checkout message. Naming the
+  // exact SHA is the only provider-neutral instruction available: Azure DevOps publishes
+  // refs/pull/<id>/merge but no /head ref, and the merge ref is the wrong target anyway —
+  // it is source merged with target, which differs from the blobs under review on every
+  // file the target branch also touched.
+  sourceCommit?: string,
+): Promise<StaticResult> {
   if (!WORKDIR) {
     return { ...EMPTY, skippedReason: "PRR_WORKDIR not set; static analysis needs a source working directory" };
   }
@@ -210,8 +218,11 @@ export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
       staleFiles: stale,
       skippedReason:
         `PRR_WORKDIR does not contain the code under review: all ${stale.length} analysable ` +
-        `files differ from iteration content. Check out the PR's source branch at its head ` +
-        `commit, or clear PRR_WORKDIR to disable static analysis`,
+        `files differ from iteration content. ` +
+        (sourceCommit
+          ? `Run \`git checkout ${sourceCommit}\` there`
+          : `Check it out at the iteration's source commit`) +
+        `, or clear PRR_WORKDIR to disable static analysis`,
     };
   }
 

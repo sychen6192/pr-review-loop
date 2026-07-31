@@ -11,9 +11,20 @@ export interface ExecResult {
   code: number;
 }
 
-export function run(cmd: string, args: string[], timeoutMs = 60_000): Promise<ExecResult> {
+/**
+ * `cwd` matters more than it looks: a linter driven by its working directory (tsc takes no
+ * file arguments at all) runs against whatever directory it is launched in. Without this,
+ * static analysis type-checked prloop itself and every finding was then dropped by the
+ * diff filter for having paths that matched nothing — a silent zero, not an error.
+ */
+export function run(
+  cmd: string,
+  args: string[],
+  timeoutMs = 60_000,
+  cwd?: string,
+): Promise<ExecResult> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       const code = err && typeof (err as NodeJS.ErrnoException).code === "number"
         ? ((err as unknown as { code: number }).code)
         : err

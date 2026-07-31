@@ -13,7 +13,7 @@ import { globToRegExp, loadRules, selectRules } from "../libs/rules";
 import { finalize } from "../gates/aggregate";
 import { bypassesProxy, redactProxy } from "../libs/proxy";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
-import { filterToChangedLines, matchesReviewedContent } from "../gates/static";
+import { filterToChangedLines, matchesReviewedContent, projectDirsFor } from "../gates/static";
 import { parseToolOutput } from "../profiles/parsers";
 import { selectProfiles, filesForProfile } from "../profiles";
 import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
@@ -732,6 +732,47 @@ section("diff filtering of static findings");
 
   check("a missing file is rejected", !matchesReviewedContent(path.join(dir, "gone.py"), reviewed));
   fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// tsc takes no file arguments — it is driven entirely by its working directory. Resolving
+// which project a target belongs to is what decides whether the repo's only fact-tier tool
+// runs at all, or silently checks the wrong tree.
+{
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "prloop-proj-")));
+  const mk = (p: string) => {
+    fs.mkdirSync(path.join(root, path.dirname(p)), { recursive: true });
+    fs.writeFileSync(path.join(root, p), "{}");
+  };
+  const tsc = {
+    name: "tsc", bin: "npx", args: () => [], format: "tsc-text" as const,
+    tier: "fact" as const, requires: "tsconfig.json",
+  };
+
+  mk("playwright/tsconfig.json");
+  const nested = projectDirsFor(tsc, ["playwright/tests/a.spec.ts", "playwright/tests/b.spec.ts"], root);
+  eq("a subdirectory project resolves to one dir", nested.length, 1);
+  eq("...the dir holding tsconfig.json", nested[0]?.dir, path.join(root, "playwright"));
+  eq("...carrying both of its files", nested[0]?.files.length, 2);
+
+  // Two projects in one change set must not collapse into whichever is found first.
+  mk("api/tsconfig.json");
+  eq("two projects produce two runs",
+    projectDirsFor(tsc, ["playwright/tests/a.spec.ts", "api/src/h.ts"], root).length, 2);
+
+  // Nearest ancestor, not outermost: a root config must not swallow a nested project.
+  mk("tsconfig.json");
+  eq("the nearest tsconfig wins over the root one",
+    projectDirsFor(tsc, ["playwright/tests/a.spec.ts"], root)[0]?.dir, path.join(root, "playwright"));
+  eq("a file with no nearer config falls back to the root",
+    projectDirsFor(tsc, ["loose.ts"], root)[0]?.dir, root);
+
+  eq("an unfindable marker yields no runs, not a wrong-dir run",
+    projectDirsFor({ ...tsc, requires: "nope.json" }, ["playwright/tests/a.spec.ts"], root).length, 0);
+
+  const noMarker = projectDirsFor({ ...tsc, requires: undefined }, ["a.ts"], root);
+  eq("a tool with no marker runs once", noMarker.length, 1);
+  eq("...at the workdir itself", noMarker[0]?.dir, root);
+  fs.rmSync(root, { recursive: true, force: true });
 }
 
 section("language profile selection");

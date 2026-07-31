@@ -83,7 +83,9 @@ const nextjs: Profile = {
       // like everything else rather than being limited to the changed files up front.
       name: "tsc",
       bin: "npx",
-      args: () => ["tsc", "--noEmit", "--pretty", "false"],
+      // --locale en pins the diagnostic text. Without it the messages follow the machine's
+      // locale, and environmentMessages below matches on that text.
+      args: () => ["tsc", "--noEmit", "--pretty", "false", "--locale", "en"],
       format: "tsc-text",
       tier: "fact",
       allowNonZeroExit: true,
@@ -94,6 +96,8 @@ const nextjs: Profile = {
       // defaults — hundreds of high-severity fact-tier comments about the environment.
       environmentRules: [
         "TS2307", // Cannot find module 'x' or its corresponding type declarations
+        "TS2792", // Cannot find module 'x'. Did you mean to set 'moduleResolution'…
+        "TS2503", // Cannot find namespace 'NodeJS' — needs @types/node
         "TS2688", // Cannot find type definition file for 'x'
         "TS7016", // Could not find a declaration file for module 'x'
         "TS2580", // Cannot find name 'process' — needs @types/node
@@ -106,6 +110,14 @@ const nextjs: Profile = {
         "TS6053", // File 'x' not found — usually an unresolvable tsconfig `extends`
         "TS5083", // Cannot read file 'x'
       ],
+      // TS2307 and TS2792 are the same failure under different config, and which one you get
+      // is not something a rule list can predict — a list built from one repo's output
+      // misses the other. Match the message family too. Deliberately NOT matching the bare
+      // "Cannot find name 'x'" (TS2304): that also fires for a genuine undeclared
+      // identifier, and discarding the run on it would suppress a real defect. The specific
+      // @types/lib variants above cover the environment side of that message.
+      environmentMessages:
+        /^(Cannot find module|Cannot find namespace|Cannot find type definition file|Could not find a declaration file|Cannot find lib definition|File '.*' not found|Cannot read file)/,
     },
     {
       name: "eslint",

@@ -826,6 +826,33 @@ section("broken toolchain detection");
   const healthy = parsed.filter((f) => f.ruleId === "TS2345");
   check("a healthy run is left alone", environmentFailure(tsc, healthy, ".") === undefined);
 
+  // TS2792 is the same failure as TS2307 under different module settings, and which one you
+  // get is not predictable from a rule list. An end-to-end run against a real uninstalled
+  // subproject emitted this one, and the first version of the code list — assembled from the
+  // TS2307 wording — let the entire run through.
+  const variant = [
+    `tests/a.ts(1,25): error TS2792: Cannot find module '@playwright/test'. Did you mean to set the 'moduleResolution' option to 'nodenext'?`,
+    `tests/a.ts(5,7): error TS2322: Type 'string' is not assignable to type 'number'.`,
+  ].join("\n");
+  const vWhy = environmentFailure(tsc, parseToolOutput(variant, tsc, "/w"), "playwright");
+  check("the TS2792 wording of cannot-find-module also trips", vWhy !== undefined);
+  check("...taking the genuine type error down with it", vWhy!.includes("all 2"));
+
+  // The message backstop has to survive a code the list has never seen.
+  const unlisted = parseToolOutput(
+    `tests/a.ts(1,1): error TS9999: Cannot find module 'x' or its corresponding type declarations.`,
+    tsc, "/w",
+  );
+  check("an unlisted code still trips on the message", environmentFailure(tsc, unlisted, ".") !== undefined);
+
+  // ...but a bare "Cannot find name" must NOT: that is also a genuine undeclared identifier,
+  // and discarding the run on it would suppress a real defect.
+  const undeclared = parseToolOutput(`tests/a.ts(3,1): error TS2304: Cannot find name 'usrName'.`, tsc, "/w");
+  check(
+    "an undeclared identifier stays a finding, not an environment failure",
+    environmentFailure(tsc, undeclared, ".") === undefined,
+  );
+
   const eslint = tsProfile.tools.find((t) => t.name === "eslint")!;
   check("a tool with no environment rules never trips", environmentFailure(eslint, parsed, ".") === undefined);
 }

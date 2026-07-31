@@ -237,6 +237,12 @@ export function renderSummary(input: SummaryInput): string {
     );
     for (const s of sr.skipped) notes.push(`Skipped tool ${s.tool}: ${s.reason}`);
   }
+  if (sr && sr.staleFiles.length > 0 && !sr.skippedReason) {
+    notes.push(
+      `Static analysis skipped ${sr.staleFiles.length} files: the PRR_WORKDIR checkout of them ` +
+        `differs from the code under review, so any line number a tool reported would be wrong`,
+    );
+  }
   for (const e of input.finderErrors) {
     notes.push(`Model ${e.model} produced no result: ${e.error}`);
   }
@@ -260,6 +266,14 @@ export function renderSummary(input: SummaryInput): string {
         (agg.stats.refuted > 0
           ? ` → ${agg.stats.refuted} refuted by adversarial verification, ${agg.stats.survived} survived`
           : ""),
+    );
+  }
+  // The per-reason breakdown, not just the count. "10 findings were not posted" is not
+  // actionable on its own; "10, all quote-not-found" points straight at the finder prompt.
+  const failures = Object.entries(agg.stats.byFailure).sort((a, b) => b[1] - a[1]);
+  if (failures.length > 0) {
+    notes.push(
+      `Anchoring failures: ${failures.map(([k, v]) => `${FAILURE_LABEL[k] ?? k} ${v}`).join(", ")}`,
     );
   }
   if (notes.length > 0) {

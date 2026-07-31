@@ -34,7 +34,16 @@ export const FINDINGS_SCHEMA = {
           },
           context_before: { type: ["string", "null"] },
           context_after: { type: ["string", "null"] },
-          side: { type: "string", enum: ["right", "left"] },
+          // Described, not just enumerated: a required enum with no description is a coin
+          // flip under guided decoding, and a guessed "left" on an added file used to make
+          // the quote unmatchable. Anchoring now retries the other side, but getting it
+          // right here saves the retry.
+          side: {
+            type: "string",
+            enum: ["right", "left"],
+            description:
+              "\"right\" (the new code) for almost every finding. Only \"left\" when the quote is a line this PR DELETED.",
+          },
           claim: { type: "string" },
           evidence: { type: ["string", "null"] },
           suggested_fix: { type: ["string", "null"] },

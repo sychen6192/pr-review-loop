@@ -88,6 +88,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
           suppressedCount: 0,
           ranTools: [],
           skipped: [],
+          staleFiles: [],
           skippedReason: "no reviewable code changes",
         },
         dismissalHints: [],
@@ -139,12 +140,13 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
           suppressedCount: 0,
           ranTools: [],
           skipped: [],
+          staleFiles: [],
           skippedReason: "static analysis skipped by config",
         })
       : runStaticGate(ctx.files)
     ).catch((e): StaticResult => {
       stageFailures.push(`static gate (${e instanceof Error ? e.message : String(e)})`);
-      return { facts: [], needsTriage: [], suppressedCount: 0, ranTools: [], skipped: [], skippedReason: "crashed" };
+      return { facts: [], needsTriage: [], suppressedCount: 0, ranTools: [], skipped: [], staleFiles: [], skippedReason: "crashed" };
     }),
     runFinders(opts.runner, {
       pr: ctx.pr,

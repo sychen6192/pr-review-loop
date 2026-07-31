@@ -150,10 +150,37 @@ export function anchorFinding(finding: RawFinding, files: FileDiff[]): AnchorRes
     };
   }
 
-  const side: "right" | "left" = finding.side === "left" ? "left" : "right";
+  const stated: "right" | "left" = finding.side === "left" ? "left" : "right";
+  const primary = anchorOnSide(finding, file, stated);
+  if (primary.anchor) return primary;
+
+  // `side` is a required enum in the finder schema with no natural default, so a model that
+  // was given no reason to prefer one effectively guesses — and a guessed "left" on an added
+  // file has no content to match against at all. Retry the other side rather than losing the
+  // finding to a coin flip.
+  //
+  // Only for quote-not-found. "outside-changed-lines" and "quote-ambiguous" are real verdicts
+  // about a quote we DID locate; retrying past them would smuggle in exactly the findings
+  // those checks exist to stop.
+  if (primary.failure === "quote-not-found") {
+    const other = stated === "right" ? "left" : "right";
+    const fallback = anchorOnSide(finding, file, other);
+    if (fallback.anchor) return fallback;
+  }
+  return primary;
+}
+
+function anchorOnSide(finding: RawFinding, file: FileDiff, side: "right" | "left"): AnchorResult {
   const lines = side === "right" ? file.rightLines : file.leftLines;
   if (lines.length === 0) {
-    return { file, failure: "file-not-in-diff", detail: `file "${file.path}" has no ${side}-side content to match against` };
+    // Not "file-not-in-diff": the file IS in the change set, the side is just empty (an add
+    // has no left side, a delete no right). Reporting it as a missing file sent debugging
+    // after the path resolver instead of the side.
+    return {
+      file,
+      failure: "quote-not-found",
+      detail: `file "${file.path}" has no ${side}-side content to match against`,
+    };
   }
 
   const needle = quoteLines(finding.quote ?? "");

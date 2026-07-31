@@ -214,7 +214,7 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_EXCLUDE_CATEGORIES` | — | categories never reported (e.g. `performance,maintainability`); dropped before the skeptic spends tokens on them |
 | `PRR_LEARN_FROM_DISMISSALS` | `1` | `0` = re-post findings humans dismissed as wontFix/byDesign |
 | `PRR_REQUIRE_CORROBORATION` | `1` | `0` publishes unverified single-source findings |
-| `PRR_WORKDIR` | — | checkout of the PR's source branch at its head; unset = static analysis skips. Files whose content differs from the iteration under review are skipped, not analysed |
+| `PRR_WORKDIR` | — | checkout at the iteration's `sourceRefCommit`; unset = static analysis skips. Files whose content differs from the iteration under review are skipped, not analysed |
 | `PRR_TRIAGE_MODEL` | — | unset = high-FP tool findings are dropped |
 | `PRR_CA_CERTS` | — | CA bundle for TLS-intercepting networks (comma-separated) |
 | `PRR_DRY_RUN` | — | `1` = compute, publish nothing |

@@ -143,7 +143,7 @@ export async function runReview(opts: ReviewRunOptions): Promise<ReviewRunResult
           staleFiles: [],
           skippedReason: "static analysis skipped by config",
         })
-      : runStaticGate(ctx.files)
+      : runStaticGate(ctx.files, ctx.iteration.sourceRefCommit)
     ).catch((e): StaticResult => {
       stageFailures.push(`static gate (${e instanceof Error ? e.message : String(e)})`);
       return { facts: [], needsTriage: [], suppressedCount: 0, ranTools: [], skipped: [], staleFiles: [], skippedReason: "crashed" };

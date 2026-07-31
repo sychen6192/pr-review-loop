@@ -1,5 +1,5 @@
 ---
-applyTo: "**/*.tsx", "**/*.jsx", "**/app/**", "**/pages/**"
+applyTo: "**/*.tsx", "**/*.jsx", "**/app/**/*.ts", "**/app/**/*.js", "**/pages/**/*.ts", "**/pages/**/*.js"
 ---
 
 # React / Next.js review rules

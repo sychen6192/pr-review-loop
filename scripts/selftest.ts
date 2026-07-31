@@ -556,8 +556,30 @@ section("rule selection");
   eq("tsx page gets next only", names(["/apps/web/app/page.tsx"]), ["_base.md", "nextjs.md"]);
   // `**/app/**` must not swallow the `apps/` directory prefix.
   check("apps/ prefix does not match **/app/**", !names(["/apps/api/src/user.ts"]).includes("nextjs.md"));
+  // ...nor any non-JS file that merely lives under a directory called app/ or pages/, which
+  // is the standard Flask and FastAPI layout.
+  check("a python file under app/ gets no react rules", !names(["/svc/app/handlers.py"]).includes("nextjs.md"));
+  check("a java file under pages/ gets no react rules", !names(["/svc/pages/Render.java"]).includes("nextjs.md"));
+  eq("a route handler under app/ still gets next", names(["/web/app/api/route.ts"]).includes("nextjs.md"), true);
   eq("mts detected as typescript", detectLanguage("/src/x.mts"), "typescript");
   check("mts is reviewable", isReviewable("/src/x.mts"));
+
+  // Python. The profile has always claimed .pyi, but the pack's glob did not, so stub files
+  // reached the finder with only the cross-language baseline attached.
+  eq("py loads the python pack", names(["/svc/app/handlers.py"]), ["_base.md", "python.md"]);
+  eq("pyi stubs load it too", names(["/svc/app/types.pyi"]), ["_base.md", "python.md"]);
+  check("pyi is reviewable", isReviewable("/svc/app/types.pyi"));
+  check("python does not pull in js packs", !names(["/svc/app/handlers.py"]).includes("typescript.md"));
+
+  const py = shipped.find((r) => r.name === "python.md")!;
+  // The pack's whole premise is not restating tool output; these are ruff defaults.
+  for (const code of ["B006", "RUF012", "B023", "ASYNC2xx", "DTZ005"]) {
+    check(`python pack names ${code} as already covered`, py.body.includes(code));
+  }
+  // ...and these are the gaps it exists to fill, so it must say they are NOT default.
+  for (const code of ["RUF006", "B904", "PLW1641"]) {
+    check(`python pack flags ${code} as not default`, py.body.includes(code));
+  }
 }
 
 // --- adversarial verification ---

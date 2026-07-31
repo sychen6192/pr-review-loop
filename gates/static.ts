@@ -117,29 +117,69 @@ export function filterToChangedLines(
   return { kept, dropped };
 }
 
+const slash = (p: string) => p.replace(/\\/g, "/");
+
+/**
+ * The directories a tool should actually run in, with the targets that belong to each.
+ *
+ * `requires` used to be checked only at the workdir root, which assumed one project per
+ * repository. A Playwright suite or any monorepo keeps its tsconfig.json in a subdirectory,
+ * so the repo's only fact-tier tool was skipped on exactly the repos that have the most to
+ * gain from it. Resolve the marker the way the tools themselves do — nearest ancestor of
+ * the file, bounded by the workdir — and run once per distinct project.
+ */
+export function projectDirsFor(
+  spec: ToolSpec,
+  files: string[],
+  workdir: string,
+): Array<{ dir: string; files: string[] }> {
+  const root = path.resolve(workdir);
+  if (!spec.requires) return [{ dir: root, files }];
+
+  const byDir = new Map<string, string[]>();
+  for (const f of files) {
+    let dir = path.dirname(path.resolve(root, f));
+    for (;;) {
+      if (fs.existsSync(path.join(dir, spec.requires))) {
+        byDir.set(dir, [...(byDir.get(dir) ?? []), f]);
+        break;
+      }
+      const parent = path.dirname(dir);
+      if (dir === root || parent === dir) break;
+      dir = parent;
+    }
+  }
+  return [...byDir].map(([dir, dirFiles]) => ({ dir, files: dirFiles }));
+}
+
 async function runTool(
   spec: ToolSpec,
   profile: Profile,
   files: string[],
   workdir: string,
+  // Where the tool runs. Its own output is relative to this, not to the workdir.
+  cwd: string,
 ): Promise<{ findings: ToolFinding[]; skipped?: string }> {
-  if (spec.requires && !fs.existsSync(path.join(workdir, spec.requires))) {
-    return { findings: [], skipped: `${spec.requires} not found` };
-  }
   if (!(await commandExists(spec.bin))) {
     return { findings: [], skipped: `${spec.bin} not found on PATH` };
   }
 
-  const args = spec.args(files);
-  logVerbose(`static: ${spec.name} ${args.slice(0, 6).join(" ")}…`);
-  const res = await run(spec.bin, args, STATIC_TIMEOUT_MS);
+  // Tool arguments and tool output both live in the project's coordinate system.
+  const args = spec.args(files.map((f) => slash(path.relative(cwd, path.resolve(workdir, f)))));
+  logVerbose(`static: ${spec.name} (in ${slash(path.relative(workdir, cwd)) || "."}) ${args.slice(0, 6).join(" ")}…`);
+  const res = await run(spec.bin, args, STATIC_TIMEOUT_MS, cwd);
 
   // Linters conventionally exit non-zero when they find something; that's not a failure.
   if (res.code !== 0 && !spec.allowNonZeroExit) {
     return { findings: [], skipped: `exit code ${res.code}: ${res.stderr.slice(0, 200)}` };
   }
   const raw = spec.readStderr ? res.stderr : res.stdout || res.stderr;
-  const parsed = parseToolOutput(raw, spec, workdir);
+  // Parse against the tool's own cwd, then lift the paths back into workdir coordinates —
+  // filterToChangedLines matches against workdir-relative diff paths.
+  const prefix = slash(path.relative(workdir, cwd));
+  const parsed = parseToolOutput(raw, spec, cwd).map((f) =>
+    prefix ? { ...f, file: `${prefix}/${f.file}` } : f,
+  );
 
   const ignored = new Set(profile.ignoreRules ?? []);
   const findings = parsed.filter((f) => !ignored.has(f.ruleId));
@@ -193,12 +233,26 @@ export async function runStaticGate(
     });
     if (targets.length === 0) continue;
 
-    // Tools within a profile are independent; run them together.
+    // Tools within a profile are independent; run them together. A tool with a project
+    // marker runs once per project it resolves to, so a monorepo gets each of its projects
+    // checked instead of only whichever one happens to sit at the repo root.
     const results = await Promise.all(
-      profile.tools.map(async (spec) => ({
-        spec,
-        ...(await runTool(spec, profile, targets, WORKDIR)),
-      })),
+      profile.tools.flatMap((spec) => {
+        const projects = projectDirsFor(spec, targets, WORKDIR);
+        if (projects.length === 0) {
+          return [
+            Promise.resolve({
+              spec,
+              findings: [] as ToolFinding[],
+              skipped: `no ${spec.requires} found above any changed file`,
+            }),
+          ];
+        }
+        return projects.map(async (p) => ({
+          spec,
+          ...(await runTool(spec, profile, p.files, WORKDIR, p.dir)),
+        }));
+      }),
     );
     for (const r of results) {
       if (r.skipped) {

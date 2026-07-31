@@ -160,7 +160,10 @@ export async function runSkeptic(
   }
   for (const o of outcomes) {
     if (!o.killed) continue;
-    const why = o.verdicts.find((v) => v.refuted)?.reason ?? "";
+    // Collapse first, truncate second. A model's reason is prose with paragraph breaks, and
+    // slicing it while the newlines are still in there emitted lines with no [mm:ss] prefix
+    // in the middle of the log, which reads as the run having crashed.
+    const why = (o.verdicts.find((v) => v.refuted)?.reason ?? "").replace(/\s+/g, " ").trim();
     logVerbose(`  refuted: ${o.finding.file}:${o.finding.anchor?.startLine} — ${why.slice(0, 120)}`);
   }
   return outcomes;

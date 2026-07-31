@@ -131,7 +131,9 @@ const findings: AnchoredFinding[] = [
       "If gateway.refund times out or throws, db.commit() never runs, but the gateway may have already " +
       "refunded, leaving books and DB inconsistent. The connection is also held for the whole RPC, " +
       "exhausting the pool under load.",
-    suggested_fix: "Commit local state first, then trigger the gateway refund via an outbox/event with compensation.",
+    suggested_fix:
+      "    db.commit()\n" +
+      "    outbox.enqueue(RefundRequested(order.payment_id, amount))",
     sources: ["qwen3-coder"],
     fingerprint: "a1b2c3d4e5f6",
     anchor: { side: "right", startLine: 5, endLine: 5, startOffset: 1, endOffset: 46 },

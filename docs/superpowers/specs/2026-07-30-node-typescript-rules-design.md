@@ -295,6 +295,12 @@ table, plus:
 These were identified while scoping this work and are recorded so they are not lost. All
 predate this change and none is introduced by it.
 
+> **Update:** defects 1, 2 and 4 are fixed. `run()` now takes a `cwd`; `projectDirsFor()`
+> resolves each tool's marker to the nearest ancestor of the changed files and runs the tool
+> once per project it finds; output paths are parsed against that cwd and lifted back into
+> workdir coordinates. Defect 4 fell out of the same change — `target/classes` resolves per
+> module exactly like `tsconfig.json` resolves per package. Defect 3 stands.
+
 1. **Static analysis tools run in the wrong working directory.** `libs/shell.ts` `run()`
    never passes `cwd` to `execFile`, so tools execute in prloop's own process working
    directory rather than `PRR_WORKDIR` — while `gates/static.ts:96` checks `requires`

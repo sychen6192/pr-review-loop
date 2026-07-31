@@ -19,7 +19,18 @@ import { caBundle, caSummary } from "./tls";
  * your git sends). That is a policy workaround for the operator to choose deliberately,
  * not something an open tool should ship as its default.
  */
-export const USER_AGENT = process.env.PRR_USER_AGENT ?? "prloop/0.1";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+// Derived from package.json so the UA can never drift from the released version again.
+const pkgVersion = (() => {
+  try {
+    const p = fileURLToPath(new URL("../package.json", import.meta.url));
+    return (JSON.parse(readFileSync(p, "utf8")) as { version?: string }).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
+export const USER_AGENT = process.env.PRR_USER_AGENT ?? `prloop/${pkgVersion}`;
 
 function envAny(...names: string[]): string {
   for (const n of names) {

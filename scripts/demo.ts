@@ -174,7 +174,7 @@ console.log(
       inline: findings,
       belowBar: [],
       degraded,
-      stats: { raw: 4, afterDedupe: 3, anchored: 3, survived: 2, inline: 2, byFailure: { "quote-not-found": 1 }, excluded: 0, dismissed: 0 },
+      stats: { raw: 4, afterDedupe: 3, anchored: 3, survived: 2, refuted: 1, inline: 2, byFailure: { "quote-not-found": 1 }, excluded: 0, dismissed: 0 },
     },
     req,
     finderErrors: [],

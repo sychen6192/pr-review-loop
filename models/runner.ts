@@ -135,20 +135,6 @@ export class OpenAICompatRunner implements ModelRunner {
 }
 
 /**
- * Caps concurrent calls across every stage at once.
- *
- * Applied here rather than at each call site so a single pool covers finders, the
- * requirement axis, the skeptic and triage — the stages overlap, and per-stage limits would
- * still let their sum swamp the endpoint.
- */
-/**
- * True for failures where the same request may well succeed on a second attempt.
- *
- * Deliberately conservative: an HTTP 4xx is the backend telling us the request itself is
- * wrong (bad schema, bad auth, unknown model) and retrying only wastes the endpoint's time.
- * 408 and 429 are the exceptions — those are about timing, not about the request.
- */
-/**
  * Reports a completion that arrived successfully but is unusable, or undefined if it's fine.
  *
  * Truncation is a different failure from bad output and needs a different fix. Left
@@ -156,9 +142,9 @@ export class OpenAICompatRunner implements ModelRunner {
  * the prompt or the schema when the real answer is "raise the token limit".
  *
  * Thinking models make this the common case rather than an edge case: chain of thought is
- * billed to the same budget as the answer. A measured run on a self-hosted qwen3.6:27b spent
- * 7842 of 8192 tokens, most of it in `reasoning` — 4% of headroom away from silently
- * returning zero findings.
+ * billed to the same budget as the answer. A measured run on a self-hosted 27B thinking
+ * model spent 7842 of 8192 tokens, most of it in `reasoning` — 4% of headroom away from
+ * silently returning zero findings.
  */
 export function describeBadCompletion(
   choice: { message?: { content?: string | null; reasoning?: string | null }; finish_reason?: string } | undefined,
@@ -180,8 +166,20 @@ export function describeBadCompletion(
   return undefined;
 }
 
+/**
+ * True for failures where the same request may well succeed on a second attempt.
+ *
+ * Deliberately conservative in both directions: an HTTP 4xx is the backend saying the
+ * request itself is wrong (408/429 excepted — those are about timing), and a completion
+ * that arrived but was unusable (truncated at the token limit, empty, non-JSON body) is
+ * DETERMINISTIC — the retry burns a second full-length call to reproduce the identical
+ * failure. Only network/5xx/timeout classes are worth a second attempt.
+ */
 export function isTransientModelError(error: string): boolean {
   if (/^HTTP (4\d\d)/.test(error)) return /^HTTP (408|429)/.test(error);
+  if (/truncated at the token limit|returned only reasoning|empty response|response is not JSON/.test(error)) {
+    return false;
+  }
   return true;
 }
 
@@ -191,6 +189,9 @@ function withRetries(inner: ModelRunner, attempts: number): ModelRunner {
     async chat(req) {
       let last = await inner.chat(req);
       for (let i = 0; i < attempts && last.error && isTransientModelError(last.error); i++) {
+        // Exponential backoff: an immediate retry against a 429 or a briefly-down endpoint
+        // tends to collect the same answer.
+        await new Promise((r) => setTimeout(r, 500 * 2 ** i));
         logVerbose(`retrying ${req.model} after transient failure: ${last.error.slice(0, 160)}`);
         last = await inner.chat(req);
       }
@@ -199,6 +200,40 @@ function withRetries(inner: ModelRunner, attempts: number): ModelRunner {
   };
 }
 
+// ─── Token accounting ────────────────────────────────────────────────────────
+// The adapter has always parsed usage out of the response; this is the one place every
+// call passes through, so totals are collected here instead of threading counters
+// through four gate modules. Read at the end of a run for the summary and artifacts.
+export interface TokenTotals {
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+const totals: TokenTotals = { calls: 0, promptTokens: 0, completionTokens: 0 };
+
+export function tokenTotals(): TokenTotals {
+  return { ...totals };
+}
+
+function counted(inner: ModelRunner): ModelRunner {
+  return {
+    async chat(req) {
+      const res = await inner.chat(req);
+      totals.calls += 1;
+      totals.promptTokens += res.promptTokens ?? 0;
+      totals.completionTokens += res.completionTokens ?? 0;
+      return res;
+    },
+  };
+}
+
+/**
+ * Caps concurrent calls across every stage at once.
+ *
+ * Applied here rather than at each call site so a single pool covers finders, the
+ * requirement axis, the skeptic and triage — the stages overlap, and per-stage limits would
+ * still let their sum swamp the endpoint.
+ */
 function throttled(inner: ModelRunner, limit: number): ModelRunner {
   if (limit <= 0) return inner;
   const sem = new Semaphore(limit);
@@ -222,6 +257,8 @@ export async function createRunner(): Promise<ModelRunner> {
       ? new (await import("./opencode")).OpencodeRunner()
       : new OpenAICompatRunner();
   // Throttle innermost: each retry attempt re-queues for a slot instead of one call holding
-  // a slot for its whole retry sequence.
-  return withRetries(throttled(inner, LLM_CONCURRENCY), LLM_RETRIES);
+  // a slot for its whole retry sequence. Counting sits outermost: one record per logical
+  // call, with the usage of whichever attempt finally answered (failed attempts carry no
+  // usage data to count).
+  return counted(withRetries(throttled(inner, LLM_CONCURRENCY), LLM_RETRIES));
 }

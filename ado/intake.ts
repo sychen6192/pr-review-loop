@@ -1,6 +1,7 @@
 // Intake: turn a PR reference into the review context — file diffs with real line
 // indexes, computed from the exact blob bytes of the iteration under review.
 // Everything downstream (finder prompt, anchoring, publishing) reads from here.
+import { ADO_CONCURRENCY } from "../config";
 import { getBlob } from "./blobs";
 import { getIterationChanges, getPrInfo, listIterations } from "./iterations";
 import { buildHunks, diffLines } from "../libs/diff";
@@ -90,7 +91,7 @@ export async function buildReviewContext(ref: PrRef, compareTo = 0): Promise<Rev
 
   const files: FileDiff[] = [];
   // Modest concurrency: two blob fetches per file, and ADO rate-limits aggressively.
-  const CONCURRENCY = 6;
+  const CONCURRENCY = ADO_CONCURRENCY;
   for (let i = 0; i < targets.length; i += CONCURRENCY) {
     const batch = targets.slice(i, i + CONCURRENCY);
     const built = await Promise.all(batch.map((e) => buildFileDiff(ref, e)));

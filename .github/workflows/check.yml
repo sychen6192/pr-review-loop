@@ -1,0 +1,21 @@
+name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    strategy:
+      matrix:
+        # windows included deliberately: libs/shell.ts is Windows-specific spawn/kill code
+        # that platform-parameterized unit tests cannot fully exercise.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check

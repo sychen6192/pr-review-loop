@@ -667,10 +667,15 @@ section("comment lifecycle");
     { id: 1, status: "wontFix", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=deadbeef -->won't fix" }],
       threadContext: { filePath: "/src/a.ts" } },
     { id: 2, status: "active", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=aaaa -->still open" }] },
+    // "Closed" in the ADO UI routinely means "handled", not "wrong finding" — it must NOT
+    // become a permanent cross-PR suppression.
+    { id: 3, status: "closed", comments: [{ id: 1, content: "<!-- prloop --><!-- prloop:fp=bbbb -->fixed, closing" }],
+      threadContext: { filePath: "/src/a.ts" } },
   ];
   const d = collectDismissals(dismissed);
-  eq("collects only wontFix threads", d.length, 1);
+  eq("collects only wontFix/byDesign threads", d.length, 1);
   eq("records the fingerprint", d[0]?.fingerprint, "deadbeef");
+  eq("a closed (handled) thread is not a dismissal", d.find((x) => x.fingerprint === "bbbb"), undefined);
 }
 
 // --- noise control: exclusions and learnings (M6) ---
@@ -951,12 +956,16 @@ section("dispatcher carries the CA on every path");
       `  bypassed: dispatcherFor("http://localhost:4000/v1") !== undefined,\n` +
       `}));\n`,
   );
-  const res = spawnSync("npx", ["tsx", probe], {
+  // Not `spawnSync("npx", ...)`: on Windows that is npx.cmd, which Node refuses to spawn
+  // directly (CVE-2024-27980) — spawnSync returns EINVAL with stdout/stderr undefined.
+  // Running the tsx CLI's JS entry with the current node binary needs no shell anywhere.
+  const tsxCli = path.join(PRLOOP_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
+  const res = spawnSync(process.execPath, [tsxCli, probe], {
     encoding: "utf8",
     env: { ...process.env, PRR_CA_CERTS: pem, PRR_HTTPS_PROXY: "", PRR_NO_PROXY: "localhost", HTTPS_PROXY: "", https_proxy: "", PRR_QUIET: "1" },
   });
-  const out = parseJsonObject<{ direct?: boolean; bypassed?: boolean }>(res.stdout);
-  check("probe process ran", out.ok, res.stderr.slice(0, 400));
+  const out = parseJsonObject<{ direct?: boolean; bypassed?: boolean }>(res.stdout ?? "");
+  check("probe process ran", out.ok, (res.error ? String(res.error) : (res.stderr ?? "")).slice(0, 400));
   if (out.ok) {
     check("CA is applied with no proxy configured", out.value.direct === true);
     check("CA is applied to NO_PROXY hosts too", out.value.bypassed === true);
@@ -1250,7 +1259,12 @@ section("transient vs deterministic model failures");
   check("400 does NOT retry", !isTransientModelError("HTTP 400: Invalid schema for response_format"));
   check("401 does NOT retry", !isTransientModelError("HTTP 401: unauthorized"));
   check("404 does NOT retry", !isTransientModelError("HTTP 404: model not found"));
-  check("unparseable output does NOT reach here as HTTP", isTransientModelError("response is not JSON: <html>"));
+  // Deterministic bad completions: the retry would burn a second full-length call to
+  // reproduce the identical failure.
+  check("token-limit truncation does NOT retry", !isTransientModelError("response truncated at the token limit (8192); raise PRR_LLM_MAX_TOKENS"));
+  check("empty response does NOT retry", !isTransientModelError("model returned an empty response"));
+  check("reasoning-only response does NOT retry", !isTransientModelError("model returned only reasoning (5000 chars) and no answer; raise PRR_LLM_MAX_TOKENS"));
+  check("non-JSON body does NOT retry", !isTransientModelError("response is not JSON: <html>"));
 }
 
 section("model call concurrency cap");

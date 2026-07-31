@@ -170,8 +170,9 @@ export function environmentFailure(
   where: string,
 ): string | undefined {
   const envRules = new Set(spec.environmentRules ?? []);
-  if (envRules.size === 0) return undefined;
-  const hits = findings.filter((f) => envRules.has(f.ruleId));
+  const envMsg = spec.environmentMessages;
+  if (envRules.size === 0 && !envMsg) return undefined;
+  const hits = findings.filter((f) => envRules.has(f.ruleId) || envMsg?.test(f.message));
   if (hits.length === 0) return undefined;
   const codes = [...new Set(hits.map((f) => f.ruleId))].sort().join(", ");
   return (

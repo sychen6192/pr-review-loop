@@ -38,6 +38,13 @@ export interface ToolSpec {
    * reporting on this PR, and its other findings are artefacts of the same breakage.
    */
   environmentRules?: string[];
+  /**
+   * Backstop for the same decision, matched against the message. An id list cannot be
+   * complete: TypeScript emits at least two codes for "cannot find module" and picks
+   * between them by config, so a list assembled from one repo's output silently misses the
+   * other. Only safe because the tool is invoked with a pinned locale.
+   */
+  environmentMessages?: RegExp;
   /** Tools that signal findings via a non-zero exit code shouldn't be treated as failures. */
   allowNonZeroExit?: boolean;
   /** Some tools write findings to stderr. */

@@ -23,8 +23,18 @@ export function run(
   timeoutMs = 60_000,
   cwd?: string,
 ): Promise<ExecResult> {
+  // Through planSpawn, not execFile directly. Every static-analysis tool in the TypeScript
+  // profile is `npx`, which on Windows is npx.cmd — a shim current Node refuses to spawn
+  // (CVE-2024-27980), so the whole gate died with EINVAL there. No-op on POSIX.
+  const plan = planSpawn(cmd, args);
+  if (plan.error) return Promise.resolve({ stdout: "", stderr: plan.error, code: 1 });
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(plan.file, plan.args, {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: 8 * 1024 * 1024,
+      ...(plan.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    }, (err, stdout, stderr) => {
       const code = err && typeof (err as NodeJS.ErrnoException).code === "number"
         ? ((err as unknown as { code: number }).code)
         : err

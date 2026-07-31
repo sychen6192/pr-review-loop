@@ -88,6 +88,24 @@ const nextjs: Profile = {
       tier: "fact",
       allowNonZeroExit: true,
       requires: "tsconfig.json",
+      // Every one of these means "this checkout was never installed / configured", not
+      // "this PR is wrong". Without dependencies on disk tsc reports one per import, plus
+      // a cascade of lib errors once an unresolvable `extends` drops it back to the ES5
+      // defaults — hundreds of high-severity fact-tier comments about the environment.
+      environmentRules: [
+        "TS2307", // Cannot find module 'x' or its corresponding type declarations
+        "TS2688", // Cannot find type definition file for 'x'
+        "TS7016", // Could not find a declaration file for module 'x'
+        "TS2580", // Cannot find name 'process' — needs @types/node
+        "TS2591", // Cannot find name 'Buffer' — needs @types/node
+        "TS2583", // Cannot find name 'Set' — change the target library
+        "TS2584", // Cannot find name 'document' — change the target library
+        "TS2318", // Cannot find global type 'x'
+        "TS2468", // Cannot find global value 'Promise'
+        "TS2705", // async in ES5 requires the Promise constructor
+        "TS6053", // File 'x' not found — usually an unresolvable tsconfig `extends`
+        "TS5083", // Cannot read file 'x'
+      ],
     },
     {
       name: "eslint",

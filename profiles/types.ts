@@ -32,6 +32,12 @@ export interface ToolSpec {
   tier: ToolTier;
   /** Only run when this path exists under the workdir (e.g. a compiled classes dir). */
   requires?: string;
+  /**
+   * Rule ids that mean the tool's own environment is broken rather than the code. Seeing any
+   * of them discards the entire run — a compiler that cannot resolve imports is not
+   * reporting on this PR, and its other findings are artefacts of the same breakage.
+   */
+  environmentRules?: string[];
   /** Tools that signal findings via a non-zero exit code shouldn't be treated as failures. */
   allowNonZeroExit?: boolean;
   /** Some tools write findings to stderr. */

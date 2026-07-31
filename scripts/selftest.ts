@@ -13,7 +13,7 @@ import { globToRegExp, loadRules, selectRules } from "../libs/rules";
 import { finalize } from "../gates/aggregate";
 import { bypassesProxy, redactProxy } from "../libs/proxy";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
-import { filterToChangedLines, matchesReviewedContent, projectDirsFor } from "../gates/static";
+import { environmentFailure, filterToChangedLines, matchesReviewedContent, projectDirsFor } from "../gates/static";
 import { renderFindingComment } from "../publish/format";
 import { parseToolOutput } from "../profiles/parsers";
 import { selectProfiles, filesForProfile } from "../profiles";
@@ -774,6 +774,38 @@ section("diff filtering of static findings");
   eq("a tool with no marker runs once", noMarker.length, 1);
   eq("...at the workdir itself", noMarker[0]?.dir, root);
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+// A checkout without its dependencies installed makes tsc report one error per import plus
+// a lib cascade — all fact-tier, all posted inline with no model in the loop.
+section("broken toolchain detection");
+{
+  const raw = [
+    `tests/login.spec.ts(1,30): error TS2307: Cannot find module '@playwright/test' or its corresponding type declarations.`,
+    `tests/login.spec.ts(4,3): error TS2580: Cannot find name 'process'. Do you need to install type definitions for node?`,
+    `tests/login.spec.ts(7,1): error TS2705: An async function or method in ES5 requires the Promise constructor.`,
+    `tests/login.spec.ts(9,7): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.`,
+  ].join("\n");
+  const tsProfile = selectProfiles(["a.ts"])[0]!;
+  const tsc = tsProfile.tools.find((t) => t.name === "tsc")!;
+  const parsed = parseToolOutput(raw, tsc, "/w");
+  eq("all four errors parse", parsed.length, 4);
+
+  const why = environmentFailure(tsc, parsed, "playwright");
+  check("a broken toolchain is detected", why !== undefined);
+  check("...naming the directory", why!.includes("playwright"));
+  check(
+    "...and the distinct codes",
+    why!.includes("TS2307") && why!.includes("TS2580") && why!.includes("TS2705"),
+  );
+  // The genuine type error goes too: with imports unresolved it is an artefact, not a defect.
+  check("...discarding the whole run, not just the env errors", why!.includes("all 4"));
+
+  const healthy = parsed.filter((f) => f.ruleId === "TS2345");
+  check("a healthy run is left alone", environmentFailure(tsc, healthy, ".") === undefined);
+
+  const eslint = tsProfile.tools.find((t) => t.name === "eslint")!;
+  check("a tool with no environment rules never trips", environmentFailure(eslint, parsed, ".") === undefined);
 }
 
 // suggested_fix is contracted to be paste-ready code, so how it is fenced is part of the

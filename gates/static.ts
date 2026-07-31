@@ -152,6 +152,36 @@ export function projectDirsFor(
   return [...byDir].map(([dir, dirFiles]) => ({ dir, files: dirFiles }));
 }
 
+/**
+ * The skip reason when a tool's own toolchain is broken, or undefined when it is healthy.
+ *
+ * Discards the WHOLE run, not just the environment errors: once module resolution fails,
+ * every imported type degrades to an error and the remaining "type mismatches" are artefacts
+ * of the same breakage, not defects. Filtering only the obvious ones would publish that
+ * garbage wearing a clean face — and tsc is fact-tier, posted inline with no model in the
+ * loop to catch it.
+ *
+ * Checked before ignoreRules on purpose: a broken toolchain must not be suppressible by a
+ * profile's ignore list.
+ */
+export function environmentFailure(
+  spec: ToolSpec,
+  findings: ToolFinding[],
+  where: string,
+): string | undefined {
+  const envRules = new Set(spec.environmentRules ?? []);
+  if (envRules.size === 0) return undefined;
+  const hits = findings.filter((f) => envRules.has(f.ruleId));
+  if (hits.length === 0) return undefined;
+  const codes = [...new Set(hits.map((f) => f.ruleId))].sort().join(", ");
+  return (
+    `toolchain not usable in ${where} (${codes}) — discarding all ${findings.length} ` +
+    `${spec.name} findings, since unresolvable imports make the rest artefacts. Usually the ` +
+    `dependencies are not installed: run your install command there. First: ` +
+    `${hits[0]!.message.slice(0, 120)}`
+  );
+}
+
 async function runTool(
   spec: ToolSpec,
   profile: Profile,
@@ -180,6 +210,9 @@ async function runTool(
   const parsed = parseToolOutput(raw, spec, cwd).map((f) =>
     prefix ? { ...f, file: `${prefix}/${f.file}` } : f,
   );
+
+  const broken = environmentFailure(spec, parsed, slash(path.relative(workdir, cwd)) || ".");
+  if (broken) return { findings: [], skipped: broken };
 
   const ignored = new Set(profile.ignoreRules ?? []);
   const findings = parsed.filter((f) => !ignored.has(f.ruleId));

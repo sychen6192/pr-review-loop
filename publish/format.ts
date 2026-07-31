@@ -262,6 +262,14 @@ export function renderSummary(input: SummaryInput): string {
           : ""),
     );
   }
+  // The per-reason breakdown, not just the count. "10 findings were not posted" is not
+  // actionable on its own; "10, all quote-not-found" points straight at the finder prompt.
+  const failures = Object.entries(agg.stats.byFailure).sort((a, b) => b[1] - a[1]);
+  if (failures.length > 0) {
+    notes.push(
+      `Anchoring failures: ${failures.map(([k, v]) => `${FAILURE_LABEL[k] ?? k} ${v}`).join(", ")}`,
+    );
+  }
   if (notes.length > 0) {
     lines.push(detailsOpen("Run notes"), "");
     for (const n of notes) lines.push(`- ${n}`);

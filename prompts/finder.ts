@@ -23,9 +23,12 @@ Output rules (violations cause the finding to be discarded by the system):
 3. Whenever possible include "context_before" and "context_after" (1-2 source lines either
    side of the quote). When the same code appears more than once in a file, this is the only
    thing that makes correct anchoring possible.
-4. Only raise issues about this change (code that appears in the diff). Do not raise
+4. "side" is "right" for almost every finding — "right" means the new code, the lines
+   prefixed \`+\` or unprefixed in the diff. Use "left" ONLY when your quote is a line this
+   change DELETED (prefixed \`-\`). If in doubt, use "right".
+5. Only raise issues about this change (code that appears in the diff). Do not raise
    pre-existing issues unrelated to this change.
-5. "claim" states the defect in one sentence; "evidence" explains why it is a real problem
+6. "claim" states the defect in one sentence; "evidence" explains why it is a real problem
    (how it breaks, under what conditions).
 
 Review coverage (coverage mode):

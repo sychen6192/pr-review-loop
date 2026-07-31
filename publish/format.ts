@@ -1,6 +1,7 @@
 // Comment rendering. Every comment carries hidden markers so re-runs can recognise their
 // own threads: the bot marker identifies authorship, the fingerprint identifies the issue.
 import { BOT_MARKER, MAX_INLINE_COMMENTS, MIN_INLINE_SEVERITY, excludedCategories } from "../config";
+import { detectLanguage } from "../libs/lang";
 import type { AnchoredFinding, ReqVerdict, RequirementResult } from "../libs/types";
 import type { AggregateResult } from "../gates/aggregate";
 import type { CategoryHint } from "../libs/learnings";
@@ -61,7 +62,15 @@ export function renderFindingComment(f: AnchoredFinding): string {
   ];
   if (f.evidence) parts.push("", f.evidence);
   if (f.suggested_fix) {
-    parts.push("", "**Suggested fix**", "", "```", f.suggested_fix.trim(), "```");
+    // Tag the fence with the file's language: the field is contracted to be code, and an
+    // untagged block renders it as flat grey text right where a reviewer is comparing it
+    // against the highlighted source above.
+    const lang = detectLanguage(f.file);
+    // Drop surrounding blank lines, never leading indentation: trim() flattened the first
+    // line against the left margin while every line below kept its indent, so a fix that is
+    // contracted to be paste-ready arrived misaligned.
+    const body = f.suggested_fix.replace(/^(?:[ \t]*\r?\n)+/, "").replace(/\s+$/, "");
+    parts.push("", "**Suggested fix**", "", `\`\`\`${lang === "other" ? "" : lang}`, body, "```");
   }
   const conf = Math.round(f.confidence * 100);
   const bits: string[] = [`confidence ${conf}%`];

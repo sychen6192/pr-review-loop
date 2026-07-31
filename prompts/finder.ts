@@ -30,6 +30,11 @@ Output rules (violations cause the finding to be discarded by the system):
    pre-existing issues unrelated to this change.
 6. "claim" states the defect in one sentence; "evidence" explains why it is a real problem
    (how it breaks, under what conditions).
+7. "suggested_fix" is the corrected code, ready to paste in place of the quote — it is
+   rendered as a code block, so emit CODE, not a description of what to do. Write one for
+   every finding where a concrete fix exists; use null only when it genuinely does not (the
+   fix is a design decision, or depends on context you cannot see). "Add a null check" is
+   not a suggested fix; the rewritten lines with the null check in them are.
 
 Review coverage (coverage mode):
 - Report every issue you observe, including ones you are unsure about. Use "confidence"

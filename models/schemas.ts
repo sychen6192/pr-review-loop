@@ -46,7 +46,14 @@ export const FINDINGS_SCHEMA = {
           },
           claim: { type: "string" },
           evidence: { type: ["string", "null"] },
-          suggested_fix: { type: ["string", "null"] },
+          // Nullable AND undescribed made this the cheapest field in the schema to skip, so
+          // whether a finding carried a fix was luck. It is rendered as a code block, so
+          // say that it must be code.
+          suggested_fix: {
+            type: ["string", "null"],
+            description:
+              "The corrected code, ready to paste in place of the quote. Code only, no prose. Null only when no concrete fix can be written.",
+          },
           boundary_owner: { type: "string", enum: ["current", "external"] },
         },
       },

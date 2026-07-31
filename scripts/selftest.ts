@@ -14,6 +14,7 @@ import { finalize } from "../gates/aggregate";
 import { bypassesProxy, redactProxy } from "../libs/proxy";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
 import { filterToChangedLines, matchesReviewedContent, projectDirsFor } from "../gates/static";
+import { renderFindingComment } from "../publish/format";
 import { parseToolOutput } from "../profiles/parsers";
 import { selectProfiles, filesForProfile } from "../profiles";
 import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
@@ -773,6 +774,30 @@ section("diff filtering of static findings");
   eq("a tool with no marker runs once", noMarker.length, 1);
   eq("...at the workdir itself", noMarker[0]?.dir, root);
   fs.rmSync(root, { recursive: true, force: true });
+}
+
+// suggested_fix is contracted to be paste-ready code, so how it is fenced is part of the
+// contract, not cosmetics.
+section("suggested fix rendering");
+{
+  const base = {
+    category: "correctness", severity: "high" as const, confidence: 0.9,
+    file: "/src/pay.py", quote: "x", claim: "c", side: "right" as const,
+    sources: ["m"], fingerprint: "abc123",
+    anchor: { side: "right" as const, startLine: 1, endLine: 1, startOffset: 1, endOffset: 2 },
+  };
+  const out = renderFindingComment({ ...base, suggested_fix: "    db.commit()\n    flush()" });
+  check("fence carries the file's language", out.includes("```python"));
+  check("first line keeps its indentation", out.includes("\n    db.commit()"));
+  check("second line keeps its indentation", out.includes("\n    flush()"));
+
+  const padded = renderFindingComment({ ...base, suggested_fix: "\n\n    a()\n\n" });
+  check("surrounding blank lines are dropped", padded.includes("```python\n    a()\n```"));
+
+  const unknown = renderFindingComment({ ...base, file: "/x/Makefile", suggested_fix: "all:" });
+  check("an unknown language gets a bare fence", unknown.includes("```\nall:"));
+
+  check("no fix means no section", !renderFindingComment(base).includes("Suggested fix"));
 }
 
 section("language profile selection");

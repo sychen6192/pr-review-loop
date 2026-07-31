@@ -237,6 +237,12 @@ export function renderSummary(input: SummaryInput): string {
     );
     for (const s of sr.skipped) notes.push(`Skipped tool ${s.tool}: ${s.reason}`);
   }
+  if (sr && sr.staleFiles.length > 0 && !sr.skippedReason) {
+    notes.push(
+      `Static analysis skipped ${sr.staleFiles.length} files: the PRR_WORKDIR checkout of them ` +
+        `differs from the code under review, so any line number a tool reported would be wrong`,
+    );
+  }
   for (const e of input.finderErrors) {
     notes.push(`Model ${e.model} produced no result: ${e.error}`);
   }

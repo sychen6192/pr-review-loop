@@ -13,7 +13,7 @@ import { globToRegExp, loadRules, selectRules } from "../libs/rules";
 import { finalize } from "../gates/aggregate";
 import { bypassesProxy, redactProxy } from "../libs/proxy";
 import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
-import { filterToChangedLines } from "../gates/static";
+import { filterToChangedLines, matchesReviewedContent } from "../gates/static";
 import { parseToolOutput } from "../profiles/parsers";
 import { selectProfiles, filesForProfile } from "../profiles";
 import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
@@ -707,6 +707,33 @@ section("diff filtering of static findings");
   eq("files outside the diff are always dropped", other.kept.length, 0);
 }
 
+// Tool findings skip quote anchoring entirely, so a PRR_WORKDIR checkout that disagrees
+// with the reviewed iteration puts every static comment on the wrong line, silently. This
+// content check is the only thing standing between that and a published comment.
+{
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prloop-workdir-"));
+  const reviewed = ["def run():", "    return compute()", ""];
+
+  fs.writeFileSync(path.join(dir, "same.py"), "def run():\n    return compute()\n\n");
+  check("identical checkout is accepted", matchesReviewedContent(path.join(dir, "same.py"), reviewed));
+
+  // core.autocrlf rewrites line endings on checkout; that is not a content difference and
+  // must not disable static analysis on every file for every Windows user.
+  fs.writeFileSync(path.join(dir, "crlf.py"), "def run():\r\n    return compute()\r\n\r\n");
+  check("CRLF-only difference is still a match", matchesReviewedContent(path.join(dir, "crlf.py"), reviewed));
+
+  // One edited line is the dangerous case: same length, so line numbers still resolve and
+  // the finding looks perfectly plausible while pointing at code that no longer exists.
+  fs.writeFileSync(path.join(dir, "edited.py"), "def run():\n    return cached()\n\n");
+  check("a one-line difference is rejected", !matchesReviewedContent(path.join(dir, "edited.py"), reviewed));
+
+  fs.writeFileSync(path.join(dir, "longer.py"), "def run():\n    log()\n    return compute()\n\n");
+  check("an added line is rejected", !matchesReviewedContent(path.join(dir, "longer.py"), reviewed));
+
+  check("a missing file is rejected", !matchesReviewedContent(path.join(dir, "gone.py"), reviewed));
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 section("language profile selection");
 {
   const ps = selectProfiles(["src/a.py", "README.md"]);
@@ -790,6 +817,7 @@ section("excluded categories (PRR_EXCLUDE_CATEGORIES)");
     suppressedCount: 0,
     ranTools: ["bandit", "mypy"],
     skipped: [],
+    staleFiles: [],
   };
   const dummyRunner = { chat: async () => ({ text: "", model: "none" }) };
   process.env["PRR_EXCLUDE_CATEGORIES"] = "security";

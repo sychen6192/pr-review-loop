@@ -22,6 +22,7 @@ import {
   severityRank,
   type Severity,
 } from "../config";
+import { splitLines } from "../ado/blobs";
 import { parseJsonObject } from "../libs/json";
 import { log, logVerbose } from "../libs/log";
 import { commandExists, run } from "../libs/shell";
@@ -42,6 +43,9 @@ export interface StaticResult {
   ranTools: string[];
   skipped: Array<{ tool: string; reason: string }>;
   skippedReason?: string;
+  // Changed files whose on-disk content is not the content under review, so no tool ran on
+  // them. Reported, never analysed: their line numbers would not be this PR's line numbers.
+  staleFiles: string[];
 }
 
 const EMPTY: StaticResult = {
@@ -50,10 +54,36 @@ const EMPTY: StaticResult = {
   suppressedCount: 0,
   ranTools: [],
   skipped: [],
+  staleFiles: [],
 };
 
 function stripLeadingSlash(p: string): string {
   return p.replace(/^\/+/, "");
+}
+
+/**
+ * Whether the file on disk is byte-for-byte the content under review.
+ *
+ * Tool findings bypass quote anchoring — they carry line numbers straight from the linter,
+ * and those numbers are then filtered against changedRightLines computed from ADO blobs. A
+ * linter does not hallucinate a location, but it reports the location in the file IT read;
+ * if PRR_WORKDIR sits on a different commit (behind the PR head, uncommitted edits, the
+ * target branch) the two coordinate systems silently disagree and every tool comment lands
+ * on the wrong line. This is the only guard on the one path that has no anchoring.
+ *
+ * Trailing CR is stripped on both sides: core.autocrlf checkouts differ from the blob in
+ * line endings alone, which is not a content difference.
+ */
+export function matchesReviewedContent(absPath: string, rightLines: string[]): boolean {
+  let onDisk: string[];
+  try {
+    onDisk = splitLines(fs.readFileSync(absPath));
+  } catch {
+    return false;
+  }
+  if (onDisk.length !== rightLines.length) return false;
+  const bare = (s: string) => (s.endsWith("\r") ? s.slice(0, -1) : s);
+  return onDisk.every((l, i) => bare(l) === bare(rightLines[i] ?? ""));
 }
 
 /** reviewdog's `added` filter mode: keep only findings on lines this PR changed. */
@@ -134,10 +164,25 @@ export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
   const ranTools: string[] = [];
   const skipped: Array<{ tool: string; reason: string }> = [];
 
+  const byPath = new Map<string, FileDiff>();
+  for (const f of files) byPath.set(stripLeadingSlash(f.path), f);
+  const stale: string[] = [];
+  let analysable = 0;
+
   for (const profile of profiles) {
-    const targets = filesForProfile(profile, changedPaths).filter((p) =>
-      fs.existsSync(path.join(WORKDIR, p)),
-    );
+    const targets = filesForProfile(profile, changedPaths).filter((p) => {
+      const abs = path.join(WORKDIR, p);
+      if (!fs.existsSync(abs)) return false;
+      analysable++;
+      const fd = byPath.get(p);
+      // No FileDiff means the profile matched something outside the change set; nothing to
+      // filter it against later anyway, so leave the existing behaviour alone.
+      if (fd && !matchesReviewedContent(abs, fd.rightLines)) {
+        stale.push(p);
+        return false;
+      }
+      return true;
+    });
     if (targets.length === 0) continue;
 
     // Tools within a profile are independent; run them together.
@@ -157,6 +202,19 @@ export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
     }
   }
 
+  // Every analysable file differing means the checkout is simply not this PR — a stale
+  // branch or the wrong commit. Say that once, instead of listing every file in the change.
+  if (analysable > 0 && stale.length === analysable) {
+    return {
+      ...EMPTY,
+      staleFiles: stale,
+      skippedReason:
+        `PRR_WORKDIR does not contain the code under review: all ${stale.length} analysable ` +
+        `files differ from iteration content. Check out the PR's source branch at its head ` +
+        `commit, or clear PRR_WORKDIR to disable static analysis`,
+    };
+  }
+
   const { kept, dropped } = filterToChangedLines(all, files);
   const facts = kept.filter((f) => f.tier === "fact");
   const needsTriage = kept.filter((f) => f.tier === "triage");
@@ -174,8 +232,14 @@ export async function runStaticGate(files: FileDiff[]): Promise<StaticResult> {
       `${dropped} filtered out as outside the changed region`,
   );
   for (const s of skipped) logVerbose(`  skipped ${s.tool}: ${s.reason}`);
+  if (stale.length > 0) {
+    log(
+      `[WARN] static: ${stale.length} files skipped, PRR_WORKDIR content differs from the ` +
+        `iteration under review (${stale.slice(0, 5).join(", ")}${stale.length > 5 ? ", ..." : ""})`,
+    );
+  }
 
-  return { facts, needsTriage, suppressedCount, ranTools, skipped };
+  return { facts, needsTriage, suppressedCount, ranTools, skipped, staleFiles: stale };
 }
 
 /**

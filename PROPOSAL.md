@@ -332,7 +332,7 @@ files must cover them explicitly.
 ## 8. Project Structure (one size up from the prior tool, same philosophy)
 
 ```
-pr-review-loop/
+prloop/
   loop.ts                 # entry: argument validation, startup guard, runs/ creation
   orchestrator.ts         # the only loop controller (deterministic)
   config.ts               # SSOT: all thresholds and parameters, overridable via PRR_* env

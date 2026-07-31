@@ -54,6 +54,9 @@ function parseRule(name: string, raw: string): Rule {
     body = raw.slice(fm[0].length);
     const m = /^applyTo:\s*(.+)$/m.exec(fm[1]);
     if (m?.[1]) {
+      // Split on comma FIRST, which means `{a,b}` alternation is unusable here even though
+      // globToRegExp supports it — `"**/*.{ts,js}"` parses as two broken halves. Write the
+      // alternatives as separate quoted entries instead.
       applyTo = m[1]
         .trim()
         .replace(/^\[|\]$/g, "")

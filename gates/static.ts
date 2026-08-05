@@ -94,10 +94,21 @@ export function filterToChangedLines(
   const byPath = new Map<string, FileDiff>();
   for (const f of files) byPath.set(stripLeadingSlash(f.path), f);
 
+  // Not every tool reports a path rooted where the diff is. SpotBugs analyses bytecode and
+  // reports the source path relative to the SOURCE ROOT ("com/acme/Foo.java"), while the
+  // diff calls the same file "src/main/java/com/acme/Foo.java". Exact match first; fall back
+  // to a suffix match, and only when it is unambiguous — two modules with the same package
+  // must not silently resolve to whichever came first.
+  const bySuffix = (want: string): FileDiff | undefined => {
+    const hits = files.filter((f) => stripLeadingSlash(f.path).endsWith(`/${want}`));
+    return hits.length === 1 ? hits[0] : undefined;
+  };
+
   const kept: ToolFinding[] = [];
   let dropped = 0;
   for (const f of findings) {
-    const fd = byPath.get(stripLeadingSlash(f.file));
+    const want = stripLeadingSlash(f.file);
+    const fd = byPath.get(want) ?? bySuffix(want);
     if (!fd) {
       dropped++;
       continue;

@@ -20,6 +20,7 @@ export type OutputFormat =
   | "ruff-json"
   | "eslint-json"
   | "checkstyle-xml"
+  | "spotbugs-xml"
   | "mypy-json"
   | "tsc-text";
 

@@ -143,8 +143,9 @@ function parseEslintJson(raw: string, spec: ToolSpec, workdir: string): ToolFind
   return out;
 }
 
-// Checkstyle XML is the lingua franca of Java tooling (checkstyle, PMD, and SpotBugs via
-// its xml:withMessages output all speak a compatible dialect).
+// Checkstyle XML, also spoken by PMD's xml renderer (<violation> instead of <error>).
+// NOT spoken by SpotBugs, despite an earlier comment here claiming it was — see
+// parseSpotbugsXml.
 function parseCheckstyleXml(raw: string, spec: ToolSpec, workdir: string): ToolFinding[] {
   const out: ToolFinding[] = [];
   const fileRe = /<file[^>]*name="([^"]+)"[^>]*>([\s\S]*?)<\/file>/g;
@@ -170,6 +171,57 @@ function parseCheckstyleXml(raw: string, spec: ToolSpec, workdir: string): ToolF
         rawSeverity: attr(a, "severity"),
       });
     }
+  }
+  return out;
+}
+
+/**
+ * SpotBugs `-xml:withMessages`. Nothing like Checkstyle despite both being XML: the root is
+ * BugCollection, findings are BugInstance, and there is no <file> element at all — which is
+ * why routing it through parseCheckstyleXml yielded a silent zero.
+ */
+function parseSpotbugsXml(raw: string, spec: ToolSpec, workdir: string): ToolFinding[] {
+  const out: ToolFinding[] = [];
+  const attr = (s: string, k: string) => new RegExp(`\\b${k}="([^"]*)"`).exec(s)?.[1];
+  const text = (s: string, tag: string) =>
+    new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(s)?.[1]?.trim();
+
+  for (const m of raw.matchAll(/<BugInstance\b([^>]*)>([\s\S]*?)<\/BugInstance>/g)) {
+    const head = m[1] ?? "";
+    const body = m[2] ?? "";
+
+    // A BugInstance carries several SourceLines: one inside <Class> spanning the whole class,
+    // one inside <Method> spanning the method, and one as a direct child marking the actual
+    // bug. Only the direct child is the finding's location — the class-level one covers
+    // hundreds of lines and would make every finding "touch" the diff no matter what changed.
+    const direct = body
+      .replace(/<Class\b[^>]*\/>|<Class\b[\s\S]*?<\/Class>/g, "")
+      .replace(/<Method\b[^>]*\/>|<Method\b[\s\S]*?<\/Method>/g, "");
+    const sl = /<SourceLine\b([^>]*?)\/?>/.exec(direct)?.[1];
+    if (!sl) continue; // no precise location; a class-wide guess is worse than nothing
+
+    const line = Number(attr(sl, "start"));
+    if (!Number.isFinite(line) || line <= 0) continue;
+    const endRaw = Number(attr(sl, "end"));
+    const sourcepath = attr(sl, "sourcepath") ?? attr(sl, "sourcefile");
+    if (!sourcepath) continue;
+
+    // SpotBugs priority is 1 = most severe, the opposite direction to every severity word
+    // mapSeverity knows, so it needs its own mapping rather than the shared one.
+    const priority = attr(head, "priority") ?? "";
+    const severity: Severity = priority === "1" ? "high" : priority === "2" ? "medium" : "low";
+
+    out.push({
+      tool: spec.name,
+      tier: spec.tier,
+      ruleId: attr(head, "type") ?? "SPOTBUGS",
+      message: decodeXml(text(body, "LongMessage") ?? text(body, "ShortMessage") ?? attr(head, "type") ?? ""),
+      file: rel(sourcepath, workdir),
+      line,
+      ...(Number.isFinite(endRaw) && endRaw >= line ? { endLine: endRaw } : {}),
+      severity,
+      rawSeverity: `priority ${priority}`,
+    });
   }
   return out;
 }
@@ -241,6 +293,7 @@ const PARSERS: Record<OutputFormat, (raw: string, spec: ToolSpec, workdir: strin
   "ruff-json": parseRuffJson,
   "eslint-json": parseEslintJson,
   "checkstyle-xml": parseCheckstyleXml,
+  "spotbugs-xml": parseSpotbugsXml,
   "mypy-json": parseMypyJson,
   "tsc-text": parseTscText,
 };

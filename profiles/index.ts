@@ -58,7 +58,7 @@ const java: Profile = {
       name: "spotbugs",
       bin: "spotbugs",
       args: () => ["-textui", "-xml:withMessages", "-low", "target/classes"],
-      format: "checkstyle-xml",
+      format: "spotbugs-xml",
       tier: "triage",
       requires: "target/classes",
       allowNonZeroExit: true,

@@ -711,6 +711,60 @@ const spec = (format: string): ToolSpec =>
   eq("tsc rule", f?.ruleId, "TS2345");
   eq("tsc line number", f?.line, 12);
 }
+{
+  // Verbatim from SpotBugs' own sample output (spotbugs/src/sampleXml). The shape matters:
+  // one BugInstance carries THREE SourceLines — the class span, the method span, and the
+  // bug's own location. Taking the wrong one points the finding at line 98 of a 3000-line
+  // class, which then "touches" any diff at all.
+  const sb = `<BugCollection version="2.0.3">
+  <BugInstance type="SF_SWITCH_NO_DEFAULT" priority="2" abbrev="SF" category="STYLE">
+    <ShortMessage>Switch statement found where default case is missing</ShortMessage>
+    <LongMessage>Switch statement found in OpcodeStack.pushByIntMath where default case is missing</LongMessage>
+    <Class classname="edu.umd.cs.findbugs.OpcodeStack">
+      <SourceLine classname="edu.umd.cs.findbugs.OpcodeStack" start="98" end="3193" sourcefile="OpcodeStack.java" sourcepath="edu/umd/cs/findbugs/OpcodeStack.java"/>
+    </Class>
+    <Method classname="edu.umd.cs.findbugs.OpcodeStack" name="pushByIntMath" isStatic="false">
+      <SourceLine classname="edu.umd.cs.findbugs.OpcodeStack" start="2803" end="2938" sourcefile="OpcodeStack.java" sourcepath="edu/umd/cs/findbugs/OpcodeStack.java"/>
+    </Method>
+    <SourceLine classname="edu.umd.cs.findbugs.OpcodeStack" start="2821" end="2861" sourcefile="OpcodeStack.java" sourcepath="edu/umd/cs/findbugs/OpcodeStack.java"/>
+  </BugInstance>
+  <BugInstance type="NP_NULL_ON_SOME_PATH" priority="1" abbrev="NP" category="CORRECTNESS">
+    <LongMessage>Possible null pointer dereference</LongMessage>
+    <SourceLine classname="com.acme.Svc" start="41" end="41" sourcefile="Svc.java" sourcepath="com/acme/Svc.java"/>
+  </BugInstance>
+  <BugInstance type="UG_SYNC_SET_UNSYNC_GET" priority="2" abbrev="UG" category="MT_CORRECTNESS">
+    <Class classname="com.acme.Holder">
+      <SourceLine classname="com.acme.Holder" start="10" end="90" sourcefile="Holder.java" sourcepath="com/acme/Holder.java"/>
+    </Class>
+  </BugInstance>
+</BugCollection>`;
+  const f = parseToolOutput(sb, spec("spotbugs-xml"), "/w");
+  eq("a class-only BugInstance is skipped, never guessed at the class line", f.length, 2);
+  eq("the bug's own SourceLine wins over the class span", f[0]?.line, 2821);
+  eq("...and its end line", f[0]?.endLine, 2861);
+  eq("rule id is the bug type", f[0]?.ruleId, "SF_SWITCH_NO_DEFAULT");
+  check("LongMessage preferred over ShortMessage", (f[0]?.message ?? "").startsWith("Switch statement found in"));
+  // SpotBugs priority runs the other way to every severity word mapSeverity knows.
+  eq("priority 2 is medium", f[0]?.severity, "medium");
+  eq("priority 1 is high", f[1]?.severity, "high");
+  eq("path is the source path", f[1]?.file, "com/acme/Svc.java");
+}
+{
+  // SpotBugs reports paths relative to the source root; the diff calls the same file
+  // src/main/java/... . Without resolution every finding is dropped as "not in the diff".
+  const fd = mkFile("/svc/src/main/java/com/acme/Svc.java", ["a();", "b();"], [2]);
+  const finding = {
+    tool: "spotbugs", tier: "triage" as const, ruleId: "NP", message: "m",
+    file: "com/acme/Svc.java", line: 2, severity: "high" as const,
+  };
+  eq("a source-root-relative path resolves by suffix", filterToChangedLines([finding], [fd]).kept.length, 1);
+
+  // ...but only when unambiguous. Two modules sharing a package must not silently pick one.
+  const twin = mkFile("/api/src/main/java/com/acme/Svc.java", ["a();", "b();"], [2]);
+  const amb = filterToChangedLines([finding], [fd, twin]);
+  eq("an ambiguous suffix is dropped, not guessed", amb.kept.length, 0);
+  eq("...and counted as dropped", amb.dropped, 1);
+}
 check("empty output does not blow up", parseToolOutput("", spec("sarif"), "/w").length === 0);
 check("broken output does not blow up", parseToolOutput("{{{not json", spec("sarif"), "/w").length === 0);
 

@@ -191,10 +191,6 @@ async function runTool(
   // Where the tool runs. Its own output is relative to this, not to the workdir.
   cwd: string,
 ): Promise<{ findings: ToolFinding[]; skipped?: string }> {
-  if (!(await commandExists(spec.bin))) {
-    return { findings: [], skipped: `${spec.bin} not found on PATH` };
-  }
-
   // Tool arguments and tool output both live in the project's coordinate system.
   const args = spec.args(files.map((f) => slash(path.relative(cwd, path.resolve(workdir, f)))));
   logVerbose(`static: ${spec.name} (in ${slash(path.relative(workdir, cwd)) || "."}) ${args.slice(0, 6).join(" ")}…`);
@@ -270,8 +266,23 @@ export async function runStaticGate(
     // Tools within a profile are independent; run them together. A tool with a project
     // marker runs once per project it resolves to, so a monorepo gets each of its projects
     // checked instead of only whichever one happens to sit at the repo root.
+    // Whether the binary exists is a property of the machine, not of a project, so it is
+    // decided once per tool. Left inside runTool it fired once per resolved project, and a
+    // missing spotbugs on a three-module Maven build reported the same line three times —
+    // scaling with the repo's module count in the summary's Run notes.
+    const installed = await Promise.all(profile.tools.map((s) => commandExists(s.bin)));
+
     const results = await Promise.all(
-      profile.tools.flatMap((spec) => {
+      profile.tools.flatMap((spec, i) => {
+        if (!installed[i]) {
+          return [
+            Promise.resolve({
+              spec,
+              findings: [] as ToolFinding[],
+              skipped: `${spec.bin} not found on PATH`,
+            }),
+          ];
+        }
         const projects = projectDirsFor(spec, targets, WORKDIR);
         if (projects.length === 0) {
           return [

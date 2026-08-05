@@ -890,6 +890,21 @@ section("diff filtering of static findings");
   const noMarker = projectDirsFor({ ...tsc, requires: undefined }, ["a.ts"], root);
   eq("a tool with no marker runs once", noMarker.length, 1);
   eq("...at the workdir itself", noMarker[0]?.dir, root);
+
+  // A Maven aggregator matches the marker but owns no sources: maven-pmd-plugin's
+  // canGenerateReportInternal returns false for packaging=pom, so it writes nothing and
+  // still exits 0 — surfacing as a "produced no report" skip that reads like a crash.
+  const agg = { ...tsc, requires: "pom.xml", skipProjectWhen: /<packaging>\s*pom\s*<\/packaging>/ };
+  fs.mkdirSync(path.join(root, "core/src"), { recursive: true });
+  fs.writeFileSync(path.join(root, "pom.xml"), "<project><packaging>pom</packaging></project>");
+  fs.writeFileSync(path.join(root, "core/pom.xml"), "<project><packaging>jar</packaging></project>");
+  eq("a file inside a module resolves to the module",
+    path.basename(projectDirsFor(agg, ["core/src/A.java"], root)[0]?.dir ?? ""), "core");
+  eq("a file under the aggregator alone resolves to nothing",
+    projectDirsFor(agg, ["tools/H.java"], root).length, 0);
+  // Without the guard the same lookup selects the aggregator — the reported failure.
+  eq("...which the plain marker check would have selected",
+    projectDirsFor({ ...agg, skipProjectWhen: undefined }, ["tools/H.java"], root)[0]?.dir, root);
   fs.rmSync(root, { recursive: true, force: true });
 }
 

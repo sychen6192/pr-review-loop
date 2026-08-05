@@ -130,6 +130,15 @@ export function filterToChangedLines(
 
 const slash = (p: string) => p.replace(/\\/g, "/");
 
+/** File contents, or "" when unreadable — a marker we cannot read simply does not match. */
+function safeRead(p: string): string {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * The directories a tool should actually run in, with the targets that belong to each.
  *
@@ -151,7 +160,17 @@ export function projectDirsFor(
   for (const f of files) {
     let dir = path.dirname(path.resolve(root, f));
     for (;;) {
-      if (fs.existsSync(path.join(dir, spec.requires))) {
+      const marker = path.join(dir, spec.requires);
+      if (fs.existsSync(marker)) {
+        // A marker that disqualifies the directory is not a match — keep walking up. A file
+        // sitting directly under a Maven aggregator belongs to no analysable module, and
+        // stopping here would run the tool somewhere it can only produce nothing.
+        if (spec.skipProjectWhen?.test(safeRead(marker))) {
+          const up = path.dirname(dir);
+          if (dir === root || up === dir) break;
+          dir = up;
+          continue;
+        }
         byDir.set(dir, [...(byDir.get(dir) ?? []), f]);
         break;
       }
@@ -224,7 +243,12 @@ async function runTool(
     if (!fs.existsSync(reportPath)) {
       // Not "no findings": the tool was asked to write a report and did not. Saying so beats
       // an empty result that reads exactly like a clean build.
-      return { findings: [], skipped: `produced no ${spec.outputFile} (exit ${res.code})` };
+      return {
+        findings: [],
+        skipped:
+          `produced no ${spec.outputFile} in ${slash(path.relative(workdir, cwd)) || "."} ` +
+          `(exit ${res.code})${res.stderr.trim() ? `: ${res.stderr.trim().slice(0, 160)}` : ""}`,
+      };
     }
     raw = fs.readFileSync(reportPath, "utf8");
   } else {

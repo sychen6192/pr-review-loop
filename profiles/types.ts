@@ -34,6 +34,13 @@ export interface ToolSpec {
   /** Only run when this path exists under the workdir (e.g. a compiled classes dir). */
   requires?: string;
   /**
+   * Skip a resolved project when its `requires` file matches this. A Maven aggregator pom
+   * declares `<packaging>pom</packaging>` and owns no sources: maven-pmd-plugin's
+   * canGenerateReportInternal returns false for it, writes nothing, and exits 0 — which is
+   * indistinguishable from a crash unless we know not to expect a report.
+   */
+  skipProjectWhen?: RegExp;
+  /**
    * Rule ids that mean the tool's own environment is broken rather than the code. Seeing any
    * of them discards the entire run — a compiler that cannot resolve imports is not
    * reporting on this PR, and its other findings are artefacts of the same breakage.

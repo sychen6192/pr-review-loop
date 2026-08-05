@@ -275,6 +275,9 @@ export async function runStaticGate(
   for (const f of files) byPath.set(stripLeadingSlash(f.path), f);
   const stale: string[] = [];
   let analysable = 0;
+  // Files prloop never read (binary, or past the blob size limit). Counted apart from stale
+  // ones so the two are not confused: one is the checkout's problem, the other is not.
+  let unreadable = 0;
 
   for (const profile of profiles) {
     const targets = filesForProfile(profile, changedPaths).filter((p) => {
@@ -284,7 +287,19 @@ export async function runStaticGate(
       const fd = byPath.get(p);
       // No FileDiff means the profile matched something outside the change set; nothing to
       // filter it against later anyway, so leave the existing behaviour alone.
-      if (fd && !matchesReviewedContent(abs, fd.rightLines)) {
+      if (!fd) return true;
+
+      // A file prloop could not fetch has no content to compare against — rightLines is
+      // empty because the blob was binary or over the size limit, NOT because the checkout
+      // is stale. Calling that a content mismatch accused the user's checkout of being wrong
+      // when the truth was that prloop never read the file. It is still excluded: with no
+      // hunks there are no changed lines, so any finding on it would be dropped downstream
+      // regardless.
+      if (fd.binary || fd.truncated) {
+        unreadable++;
+        return false;
+      }
+      if (!matchesReviewedContent(abs, fd.rightLines)) {
         stale.push(p);
         return false;
       }
@@ -345,15 +360,21 @@ export async function runStaticGate(
     }
   }
 
-  // Every analysable file differing means the checkout is simply not this PR — a stale
-  // branch or the wrong commit. Say that once, instead of listing every file in the change.
-  if (analysable > 0 && stale.length === analysable) {
+  // Every CHECKABLE file differing means the checkout is simply not this PR — a stale branch
+  // or the wrong commit. Say that once, instead of listing every file in the change. Files
+  // prloop never read are excluded from the denominator: they are not evidence either way,
+  // and counting them was enough to stop this verdict from ever firing on a repo that
+  // happens to contain one oversized file.
+  const checkable = analysable - unreadable;
+  if (checkable > 0 && stale.length === checkable) {
     return {
       ...EMPTY,
       staleFiles: stale,
       skippedReason:
-        `PRR_WORKDIR does not contain the code under review: all ${stale.length} analysable ` +
-        `files differ from iteration content. ` +
+        `PRR_WORKDIR does not contain the code under review: all ${stale.length} checkable ` +
+        `files differ from iteration content` +
+        (unreadable > 0 ? ` (${unreadable} more could not be read at all)` : "") +
+        `. ` +
         (sourceCommit
           ? `Run \`git checkout ${sourceCommit}\` there`
           : `Check it out at the iteration's source commit`) +
@@ -381,8 +402,13 @@ export async function runStaticGate(
   if (stale.length > 0) {
     log(
       `[WARN] static: ${stale.length} files skipped, PRR_WORKDIR content differs from the ` +
-        `iteration under review (${stale.slice(0, 5).join(", ")}${stale.length > 5 ? ", ..." : ""})`,
+        `iteration under review — check out ${sourceCommit ?? "the iteration's source commit"} ` +
+        `there, and check for uncommitted changes or a build step that rewrites sources ` +
+        `(${stale.slice(0, 5).join(", ")}${stale.length > 5 ? ", ..." : ""})`,
     );
+  }
+  if (unreadable > 0) {
+    logVerbose(`static: ${unreadable} files not analysed, prloop could not read them (binary or over the size limit)`);
   }
 
   return { facts, needsTriage, suppressedCount, ranTools, skipped, staleFiles: stale };

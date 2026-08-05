@@ -89,6 +89,10 @@ const java: Profile = {
       format: "checkstyle-xml",
       tier: "triage",
       requires: "pom.xml",
+      // An aggregator owns no sources. canGenerateReportInternal returns false for
+      // packaging=pom, so the goal writes nothing and still exits 0 — running there produces
+      // a "produced no report" skip that looks like a crash and is not one.
+      skipProjectWhen: /<packaging>\s*pom\s*<\/packaging>/,
       outputFile: "target/pmd.xml",
       allowNonZeroExit: true,
     },

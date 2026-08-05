@@ -205,13 +205,31 @@ async function runTool(
   // Tool arguments and tool output both live in the project's coordinate system.
   const args = spec.args(files.map((f) => slash(path.relative(cwd, path.resolve(workdir, f)))));
   logVerbose(`static: ${spec.name} (in ${slash(path.relative(workdir, cwd)) || "."}) ${args.slice(0, 6).join(" ")}…`);
+
+  // Remove a stale report before the run. Otherwise a tool that fails to produce one leaves
+  // the previous build's file in place and we parse THAT — reporting fixed bugs against new
+  // code, with nothing in the output to say so.
+  const reportPath = spec.outputFile ? path.resolve(cwd, spec.outputFile) : undefined;
+  if (reportPath) fs.rmSync(reportPath, { force: true });
+
   const res = await run(spec.bin, args, STATIC_TIMEOUT_MS, cwd);
 
   // Linters conventionally exit non-zero when they find something; that's not a failure.
   if (res.code !== 0 && !spec.allowNonZeroExit) {
     return { findings: [], skipped: `exit code ${res.code}: ${res.stderr.slice(0, 200)}` };
   }
-  const raw = spec.readStderr ? res.stderr : res.stdout || res.stderr;
+
+  let raw: string;
+  if (reportPath) {
+    if (!fs.existsSync(reportPath)) {
+      // Not "no findings": the tool was asked to write a report and did not. Saying so beats
+      // an empty result that reads exactly like a clean build.
+      return { findings: [], skipped: `produced no ${spec.outputFile} (exit ${res.code})` };
+    }
+    raw = fs.readFileSync(reportPath, "utf8");
+  } else {
+    raw = spec.readStderr ? res.stderr : res.stdout || res.stderr;
+  }
   // Parse against the tool's own cwd, then lift the paths back into workdir coordinates —
   // filterToChangedLines matches against workdir-relative diff paths.
   const prefix = slash(path.relative(workdir, cwd));
@@ -283,17 +301,24 @@ export async function runStaticGate(
     // scaling with the repo's module count in the summary's Run notes.
     const installed = await Promise.all(profile.tools.map((s) => commandExists(s.bin)));
 
+    // Several specs may share a name: one job, more than one way to invoke it (a standalone
+    // binary, or the same analyser as a build-tool plugin). The first variant whose binary is
+    // present wins and the rest are not run — a machine with both must not report everything
+    // twice. Declaration order is the preference order.
     const results = await Promise.all(
-      profile.tools.flatMap((spec, i) => {
-        if (!installed[i]) {
+      [...new Set(profile.tools.map((t) => t.name))].flatMap((name) => {
+        const i = profile.tools.findIndex((t, k) => t.name === name && installed[k]);
+        if (i < 0) {
+          const variants = profile.tools.filter((t) => t.name === name);
           return [
             Promise.resolve({
-              spec,
+              spec: variants[0]!,
               findings: [] as ToolFinding[],
-              skipped: `${spec.bin} not found on PATH`,
+              skipped: `${[...new Set(variants.map((v) => v.bin))].join(" or ")} not found on PATH`,
             }),
           ];
         }
+        const spec = profile.tools[i]!;
         const projects = projectDirsFor(spec, targets, WORKDIR);
         if (projects.length === 0) {
           return [

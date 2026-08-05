@@ -50,6 +50,16 @@ export interface ToolSpec {
   allowNonZeroExit?: boolean;
   /** Some tools write findings to stderr. */
   readStderr?: boolean;
+  /**
+   * Report path relative to the tool's working directory, for tools that write to disk
+   * instead of stdout. Maven plugins all do: `pmd:pmd` writes target/pmd.xml and prints
+   * only build chatter, so reading stdout yields nothing to parse.
+   *
+   * Deleted before the run — a report left over from a previous build would otherwise be
+   * parsed as this run's output, which is the stale-analysis failure the workdir content
+   * check exists to prevent.
+   */
+  outputFile?: string;
 }
 
 export interface Profile {

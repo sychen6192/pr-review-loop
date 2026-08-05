@@ -71,6 +71,46 @@ const java: Profile = {
       tier: "suppress",
       allowNonZeroExit: true,
     },
+
+    // Maven fallbacks, used only when the standalone binary above is absent. Neither PMD nor
+    // SpotBugs ships a distribution that can be fetched through a Maven repository — only
+    // the plugins are there — so on a locked-down machine where nothing can be installed but
+    // the corporate mirror is reachable, this is the only way either analyser runs at all.
+    // Plugin versions are pinned: an unpinned `mvn pmd:pmd` resolves whatever the mirror
+    // happens to carry, and the CLI shape has changed across major versions.
+    {
+      name: "pmd",
+      bin: "mvn",
+      // The ruleset CANNOT be set here. maven-pmd-plugin declares `rulesets` with no
+      // `property`, so it is pom.xml-only and a review tool has no business editing that.
+      // This variant therefore analyses maven-pmd-plugin-default.xml, which is narrower than
+      // the quickstart set the standalone variant uses. Fewer findings, not wrong ones.
+      args: () => ["-B", "org.apache.maven.plugins:maven-pmd-plugin:3.28.0:pmd"],
+      format: "checkstyle-xml",
+      tier: "triage",
+      requires: "pom.xml",
+      outputFile: "target/pmd.xml",
+      allowNonZeroExit: true,
+    },
+    {
+      name: "spotbugs",
+      bin: "mvn",
+      // threshold/effort DO have user properties, so this variant is equivalent to the
+      // standalone `-low` invocation rather than a reduced one.
+      args: () => [
+        "-B",
+        "com.github.spotbugs:spotbugs-maven-plugin:4.9.3.0:spotbugs",
+        "-Dspotbugs.threshold=Low",
+        "-Dspotbugs.effort=Max",
+      ],
+      format: "spotbugs-xml",
+      tier: "triage",
+      // Same marker as the standalone variant: the goal analyses bytecode and does not
+      // compile, so an unbuilt module has nothing to look at.
+      requires: "target/classes",
+      outputFile: "target/spotbugsXml.xml",
+      allowNonZeroExit: true,
+    },
   ],
 };
 

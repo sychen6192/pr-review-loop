@@ -150,14 +150,19 @@ function parseCheckstyleXml(raw: string, spec: ToolSpec, workdir: string): ToolF
   const out: ToolFinding[] = [];
   const fileRe = /<file[^>]*name="([^"]+)"[^>]*>([\s\S]*?)<\/file>/g;
   const errRe = /<(?:error|violation)\b([^>]*)\/?>/g;
-  const attr = (s: string, k: string) => new RegExp(`${k}="([^"]*)"`).exec(s)?.[1];
+  // \b matters: without it, `line="` also matches inside `beginline="` and `endline="`.
+  // Checkstyle emits `line`, PMD emits `beginline`/`endline`, and the old pattern read PMD
+  // correctly only because PMD happens to put beginline first — attribute order is not
+  // guaranteed, and reversing it silently yielded the END line for every violation.
+  const attr = (s: string, k: string) => new RegExp(`\\b${k}="([^"]*)"`).exec(s)?.[1];
 
   for (const fm of raw.matchAll(fileRe)) {
     const filePath = fm[1]!;
     for (const em of (fm[2] ?? "").matchAll(errRe)) {
       const a = em[1] ?? "";
-      const line = Number(attr(a, "line"));
+      const line = Number(attr(a, "beginline") ?? attr(a, "line"));
       if (!Number.isFinite(line) || line <= 0) continue;
+      const endLine = Number(attr(a, "endline"));
       const src = attr(a, "source") ?? attr(a, "rule") ?? "";
       out.push({
         tool: spec.name,
@@ -167,6 +172,7 @@ function parseCheckstyleXml(raw: string, spec: ToolSpec, workdir: string): ToolF
         message: decodeXml(attr(a, "message") ?? ""),
         file: rel(filePath, workdir),
         line,
+        ...(Number.isFinite(endLine) && endLine >= line ? { endLine } : {}),
         severity: mapSeverity(attr(a, "severity") ?? attr(a, "priority")),
         rawSeverity: attr(a, "severity"),
       });

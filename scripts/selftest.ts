@@ -16,7 +16,7 @@ import { parseVerdict as parseVerdictForTest } from "../gates/skeptic";
 import { environmentFailure, filterToChangedLines, matchesReviewedContent, projectDirsFor } from "../gates/static";
 import { renderFindingComment } from "../publish/format";
 import { parseToolOutput } from "../profiles/parsers";
-import { selectProfiles, filesForProfile } from "../profiles";
+import { selectProfiles, filesForProfile, PROFILES } from "../profiles";
 import { lastReviewedIteration, findStaleThreads, collectDismissals, iterationMarker } from "../publish/lifecycle";
 import { postedPositions } from "../publish/publish";
 import {
@@ -764,6 +764,47 @@ const spec = (format: string): ToolSpec =>
   const amb = filterToChangedLines([finding], [fd, twin]);
   eq("an ambiguous suffix is dropped, not guessed", amb.kept.length, 0);
   eq("...and counted as dropped", amb.dropped, 1);
+}
+{
+  // PMD's xml renderer speaks the checkstyle dialect but names its attributes beginline and
+  // endline. The old `line="` pattern had no word boundary, so it matched INSIDE beginline —
+  // the right answer, but only because PMD happens to emit beginline first. XML does not
+  // guarantee attribute order.
+  const pmd = `<pmd version="7.23.0"><file name="src/A.java">
+    <violation beginline="12" endline="14" rule="UnusedLocalVariable" priority="3">msg</violation>
+  </file></pmd>`;
+  const f = parseToolOutput(pmd, spec("checkstyle-xml"), "/w")[0];
+  eq("PMD violation uses beginline", f?.line, 12);
+  eq("...and endline", f?.endLine, 14);
+  eq("PMD rule attribute is the rule id", f?.ruleId, "UnusedLocalVariable");
+
+  const reversed = `<pmd><file name="src/A.java">
+    <violation endline="14" beginline="12" rule="R" priority="3">m</violation>
+  </file></pmd>`;
+  eq("attribute order does not change the line",
+    parseToolOutput(reversed, spec("checkstyle-xml"), "/w")[0]?.line, 12);
+
+  const cs = `<checkstyle><file name="src/A.java">
+    <error line="7" severity="error" source="com.puppycrawl.tools.checkstyle.NeedBracesCheck" message="m"/>
+  </file></checkstyle>`;
+  eq("checkstyle still uses plain line", parseToolOutput(cs, spec("checkstyle-xml"), "/w")[0]?.line, 7);
+}
+{
+  // A tool may be declared more than once — one job, several ways to invoke it. Declaration
+  // order is preference order, and only the first available variant runs.
+  const java = PROFILES.find((p) => p.language === "java")!;
+  const pmdVariants = java.tools.filter((t) => t.name === "pmd");
+  eq("pmd has a standalone and a maven variant", pmdVariants.length, 2);
+  eq("standalone is preferred", pmdVariants[0]?.bin, "pmd");
+  eq("maven is the fallback", pmdVariants[1]?.bin, "mvn");
+  eq("the maven variant reads a file, not stdout", pmdVariants[1]?.outputFile, "target/pmd.xml");
+  check("the standalone variant reads stdout", pmdVariants[0]?.outputFile === undefined);
+
+  const sbVariants = java.tools.filter((t) => t.name === "spotbugs");
+  eq("spotbugs likewise", sbVariants.length, 2);
+  eq("...and its maven report path", sbVariants[1]?.outputFile, "target/spotbugsXml.xml");
+  // Both variants must agree on when there is anything to analyse at all.
+  eq("both spotbugs variants need a built module", sbVariants[0]?.requires, sbVariants[1]?.requires);
 }
 check("empty output does not blow up", parseToolOutput("", spec("sarif"), "/w").length === 0);
 check("broken output does not blow up", parseToolOutput("{{{not json", spec("sarif"), "/w").length === 0);

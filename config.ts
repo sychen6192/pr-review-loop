@@ -115,6 +115,14 @@ export const LLM_TEMPERATURE = numEnv("PRR_LLM_TEMPERATURE", 0.2);
 export const LLM_MAX_TOKENS = numEnv("PRR_LLM_MAX_TOKENS", 8192, 256);
 // 0 = don't send response_format (for backends whose schema support is broken).
 export const LLM_STRUCTURED_OUTPUT = process.env.PRR_LLM_STRUCTURED !== "0";
+// Streamed (SSE) completions, on by default. A buffered completion sends ZERO bytes until
+// the model finishes, and on a long generation that multi-minute silence outlives the idle
+// timeout of whatever sits between prloop and the engine (nginx in front of vLLM, a
+// LiteLLM proxy, a corporate gateway) — the hop gives up with a 504 long before
+// PRR_LLM_TIMEOUT_MS ever fires. Streaming keeps bytes flowing from the first token, so no
+// intermediary sees an idle connection; the response is still assembled and returned
+// whole. 0 = buffered requests (the old behaviour), for backends whose SSE is broken.
+export const LLM_STREAM = process.env.PRR_LLM_STREAM !== "0";
 
 // --- Diff / token budget (PR-Agent style deterministic compression) ---
 export const MAX_DIFF_CHARS = numEnv("PRR_MAX_DIFF_CHARS", 240_000, 1000);

@@ -209,6 +209,7 @@ Full list with explanations in [.env.example](./.env.example). The ones that cha
 | `PRR_LLM_CONCURRENCY` | `6` | in-flight model calls across all stages; match your endpoint's batch size |
 | `PRR_LLM_RETRIES` | `1` | retries on transient model failures (never on 4xx) |
 | `PRR_LLM_MAX_TOKENS` | `8192` | **raise to 16384+ for thinking models** — reasoning is billed to this budget |
+| `PRR_LLM_STREAM` | `1` | stream completions (SSE) so gateways with idle timeouts can't 504 a long generation; `0` = buffered single response |
 | `PRR_MIN_INLINE_SEVERITY` | `medium` | below this → summary only |
 | `PRR_MAX_INLINE_COMMENTS` | `10` | code axis (requirement axis has its own budget of 3) |
 | `PRR_EXCLUDE_CATEGORIES` | — | categories never reported (e.g. `performance,maintainability`); dropped before the skeptic spends tokens on them |

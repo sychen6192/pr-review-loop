@@ -161,6 +161,28 @@ probe flags this.
   weak models comply with formats much less reliably without schema enforcement.
 - **Model output won't parse.** The backend doesn't support `response_format`. Switch to vLLM (xgrammar
   guided decoding) or a LiteLLM proxy; or set `PRR_LLM_STRUCTURED=0` to inspect the raw output and adjust.
+- **`HTTP 504` (or 502/524) on model calls, usually the biggest diffs.** Not prloop's own deadline —
+  that reads `timeout (900s)`. Some hop between prloop and the engine (nginx in front of vLLM, a LiteLLM
+  proxy, a corporate gateway) gave up waiting: a buffered completion sends **zero bytes until the whole
+  generation is done**, and on a long diff — thinking models especially — that silence outlives the hop's
+  idle timeout (60–300s on common gateways). Retrying just waits out the same silence again.
+
+  prloop streams by default (`PRR_LLM_STREAM=1`): bytes flow from the first token, so no hop ever sees an
+  idle connection. Confirm streaming works end to end with a manual test —
+
+  ```bash
+  curl -N "$PRR_LLM_BASE_URL/chat/completions" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $PRR_LLM_API_KEY" \
+    -d '{"model":"<your-model>","stream":true,"messages":[{"role":"user","content":"count to 30 slowly"}]}'
+  ```
+
+  `data: {...}` lines arriving **incrementally** = streaming works, the 504 is gone. Everything arriving
+  in one burst at the end = the gateway buffers SSE; fix it there (nginx: `proxy_buffering off;` for that
+  location, and check `proxy_read_timeout` — time-to-first-token still counts against it when the engine's
+  queue is long). If the backend rejects the streaming request outright (a 4xx naming `stream`), prloop
+  logs it and falls back to buffered mode for the run — then the only real fix is raising every
+  intermediary's response timeout above your slowest generation, or `PRR_LLM_STREAM=0` plus those raised
+  timeouts.
 - **Too many comments.** Lower `PRR_MAX_INLINE_COMMENTS`, or raise `PRR_MIN_INLINE_SEVERITY` to `high`.
 - **Want to block merge.** Set `PRR_POST_STATUS=1` and add a status check with genre `prloop` / name
   `ai-review` to the branch policy. Don't have a bot cast a -10 vote — it fights the reviewer policy.
